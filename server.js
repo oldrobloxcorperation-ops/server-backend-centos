@@ -61,6 +61,18 @@ function injectedJs(pageUrl, host) {
 (function(){
   var P='https://${host}/proxy?url=', B='${pageUrl}';
 
+  function safeResolve(u){
+    if(!u) return null;
+    var s=String(u);
+    // Already absolute
+    if(/^https?:\/\//.test(s)) return s;
+    // Relative — resolve against base
+    if(B && /^https?:\/\//.test(B)){
+      try{ return new URL(s,B).href; }catch{ return null; }
+    }
+    return null;
+  }
+
   function navTo(url){
     try{ window.parent.postMessage({type:'centos-nav',url:url},'*'); }catch{}
   }
@@ -74,27 +86,20 @@ function injectedJs(pageUrl, host) {
   XMLHttpRequest.prototype.open=function(m,u){ if(/^https?:/.test(u)) u=P+encodeURIComponent(u); return _x.apply(this,arguments); };
 
   // Intercept history.pushState / replaceState
-  // In srcdoc context there's no real URL, so ALL navigations must go through proxy
   var _push=history.pushState, _repl=history.replaceState;
   function interceptState(u){
-    if(!u) return false;
-    try{
-      var resolved=new URL(String(u),B).href;
-      if(!/^https?:/.test(resolved)) return false;
-      navTo(resolved); return true;
-    }catch{ return false; }
+    var resolved=safeResolve(u);
+    if(!resolved) return false;
+    navTo(resolved); return true;
   }
   history.pushState=function(s,t,u){ if(interceptState(u)) return; return _push.apply(this,arguments); };
   history.replaceState=function(s,t,u){ if(interceptState(u)) return; return _repl.apply(this,arguments); };
 
   // Intercept window.location.href setter, assign, replace
   function interceptLoc(u){
-    if(!u) return false;
-    try{
-      var resolved=new URL(String(u),B).href;
-      if(!/^https?:/.test(resolved)) return false;
-      navTo(resolved); return true;
-    }catch{ return false; }
+    var resolved=safeResolve(u);
+    if(!resolved) return false;
+    navTo(resolved); return true;
   }
   try{
     var _ld=Object.getOwnPropertyDescriptor(Location.prototype,'href');
@@ -114,7 +119,8 @@ function injectedJs(pageUrl, host) {
     var h=a.getAttribute('href');
     if(!h||/^(#|javascript:|mailto:|tel:)/.test(h)) return;
     e.preventDefault();
-    try{ navTo(new URL(h,B).href); }catch{}
+    var resolved=safeResolve(h);
+    if(resolved) navTo(resolved);
   },true);
 
   // Intercept form submits
@@ -122,8 +128,9 @@ function injectedJs(pageUrl, host) {
     var f=e.target, m=(f.method||'GET').toUpperCase();
     if(m!=='GET') return;
     e.preventDefault();
-    var abs; try{ abs=new URL(f.action||B,B).href; }catch{ abs=f.action||B; }
-    navTo(abs+'?'+new URLSearchParams(new FormData(f)));
+    var resolved=safeResolve(f.action||B);
+    if(!resolved) return;
+    navTo(resolved+'?'+new URLSearchParams(new FormData(f)));
   },true);
 })();
 <\/script>`;
