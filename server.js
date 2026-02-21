@@ -149,7 +149,7 @@ async function fetchTavily(q) {
 
   const resp = await axios.post(
     'https://api.tavily.com/search',
-    { api_key: key, query: q, num_results: 10 },
+    { api_key: key, query: q, num_results: 50 },  // fetch max so we can paginate client-side
     {
       timeout: 10000, httpsAgent, validateStatus: () => true,
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -203,38 +203,41 @@ async function fetchWiby(q) {
 
 // ─── Search endpoint ──────────────────────────────────────────────────────────
 app.get('/search', async (req, res) => {
-  const q = req.query.q;
+  const q    = req.query.q;
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const PER  = 10;
+
   if (!q) return res.status(400).send('Missing ?q=');
   const host = req.get('host');
-  const esc = s => String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const esc  = s => String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-  let results = [];
+  let allResults = [];
   let source = '';
 
   try {
-    // Try Google CSE first (100/day free), fall back to Marginalia
     if (process.env.TAVILY_API_KEY) {
       try {
-        results = await fetchTavily(q);
+        allResults = await fetchTavily(q);
         source = 'Tavily';
-        console.log('[SEARCH] ' + results.length + ' results from Tavily');
-      } catch(e) {
-        console.warn('[SEARCH] Tavily failed:', e.message);
-      }
+        console.log('[SEARCH] ' + allResults.length + ' results from Tavily');
+      } catch(e) { console.warn('[SEARCH] Tavily failed:', e.message); }
     }
 
-    if (!results.length) {
+    if (!allResults.length) {
       try {
-        results = await fetchWiby(q);
+        allResults = await fetchWiby(q);
         source = 'Wiby';
-        console.log('[SEARCH] ' + results.length + ' results from Wiby');
-      } catch(e) {
-        console.warn('[SEARCH] Wiby failed:', e.message);
-      }
+        console.log('[SEARCH] ' + allResults.length + ' results from Wiby');
+      } catch(e) { console.warn('[SEARCH] Wiby failed:', e.message); }
     }
 
-    // Build results HTML separately to avoid nested template literal issues
-    let resultsHtml = '';
+    // Paginate
+    const totalPages = Math.max(1, Math.ceil(allResults.length / PER));
+    const safePage   = Math.min(page, totalPages);
+    const results    = allResults.slice((safePage - 1) * PER, safePage * PER);
+
+    // Build results HTML
+    var resultsHtml = '';
     if (results.length) {
       resultsHtml = results.map(function(r) {
         return '<div class="result">'
@@ -250,16 +253,42 @@ app.get('/search', async (req, res) => {
         + '</div>';
     }
 
-    const poweredBy = source ? 'Powered by ' + esc(source) : 'CentOS Web Proxy';
-    const countLabel = results.length + ' result' + (results.length !== 1 ? 's' : '');
+    // Build pagination HTML
+    var pagerHtml = '';
+    if (totalPages > 1) {
+      pagerHtml += '<div class="pager">';
+      // Prev
+      if (safePage > 1) {
+        pagerHtml += '<a class="page-btn" data-page="' + (safePage - 1) + '">&laquo; Prev</a>';
+      }
+      // Page numbers — show window of 5 around current page
+      var pStart = Math.max(1, safePage - 2);
+      var pEnd   = Math.min(totalPages, safePage + 2);
+      for (var p = pStart; p <= pEnd; p++) {
+        if (p === safePage) {
+          pagerHtml += '<span class="page-btn page-cur">' + p + '</span>';
+        } else {
+          pagerHtml += '<a class="page-btn" data-page="' + p + '">' + p + '</a>';
+        }
+      }
+      // Next
+      if (safePage < totalPages) {
+        pagerHtml += '<a class="page-btn" data-page="' + (safePage + 1) + '">Next &raquo;</a>';
+      }
+      pagerHtml += '</div>';
+    }
 
-    const html = '<!DOCTYPE html><html><head>'
+    var poweredBy  = source ? 'Powered by ' + esc(source) : 'CentOS Web Proxy';
+    var countLabel = allResults.length + ' result' + (allResults.length !== 1 ? 's' : '');
+    var pageLabel  = totalPages > 1 ? ' &mdash; Page ' + safePage + ' of ' + totalPages : '';
+
+    var html = '<!DOCTYPE html><html><head>'
       + '<meta charset="UTF-8">'
       + '<meta name="viewport" content="width=device-width,initial-scale=1">'
       + '<title>' + esc(q) + ' — CentOS Search</title>'
       + '<style>'
       + '*{margin:0;padding:0;box-sizing:border-box}'
-      + 'body{font-family:"Segoe UI",system-ui,sans-serif;background:#0d0d1c;color:#f0f0f5;min-height:100vh;padding-bottom:40px}'
+      + 'body{font-family:"Segoe UI",system-ui,sans-serif;background:#0d0d1c;color:#f0f0f5;min-height:100vh;padding-bottom:60px}'
       + '.topbar{background:rgba(10,10,25,0.97);border-bottom:1px solid rgba(255,255,255,0.08);padding:12px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:99}'
       + '.logo{color:#6c8eff;font-size:18px;font-weight:700;white-space:nowrap}'
       + '.search-form{display:flex;flex:1;gap:8px;max-width:600px}'
@@ -269,15 +298,19 @@ app.get('/search', async (req, res) => {
       + '.search-btn:hover{opacity:0.85}'
       + '.results{max-width:660px;margin:28px auto;padding:0 24px}'
       + '.result-count{font-size:13px;color:rgba(255,255,255,0.35);margin-bottom:20px}'
-      + '.result{margin-bottom:28px}'
+      + '.result{margin-bottom:28px;cursor:pointer}'
+      + '.result:hover .result-title a{text-decoration:underline}'
       + '.result-url{font-size:12px;color:#4ce8a0;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
       + '.result-title{font-size:18px;font-weight:500;margin-bottom:6px}'
-      + '.result-title a{color:#6c8eff;text-decoration:none;cursor:pointer}'
-      + '.result-title a:hover{text-decoration:underline}'
+      + '.result-title a{color:#6c8eff;text-decoration:none}'
       + '.result-snippet{font-size:14px;color:rgba(240,240,245,0.65);line-height:1.6}'
       + '.no-results{text-align:center;padding:60px 20px;color:rgba(255,255,255,0.35);font-size:15px}'
       + '.no-results code{background:rgba(255,255,255,0.06);padding:2px 7px;border-radius:4px;font-size:13px;color:#6c8eff}'
-      + '.powered{text-align:center;font-size:11px;color:rgba(255,255,255,0.15);margin-top:40px}'
+      + '.pager{display:flex;justify-content:center;gap:6px;margin-top:32px;flex-wrap:wrap}'
+      + '.page-btn{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#f0f0f5;padding:7px 14px;border-radius:8px;font-size:13px;cursor:pointer;text-decoration:none;user-select:none}'
+      + '.page-btn:hover{background:rgba(108,142,255,0.2);border-color:rgba(108,142,255,0.5)}'
+      + '.page-cur{background:rgba(108,142,255,0.25);border-color:rgba(108,142,255,0.6);color:#6c8eff;font-weight:700;cursor:default}'
+      + '.powered{text-align:center;font-size:11px;color:rgba(255,255,255,0.15);margin-top:20px}'
       + '</style></head><body>'
       + '<div class="topbar">'
       + '<span class="logo">&#x2B21; CentOS Search</span>'
@@ -286,19 +319,38 @@ app.get('/search', async (req, res) => {
       + '<button class="search-btn" type="submit">Search</button>'
       + '</form></div>'
       + '<div class="results">'
-      + '<div class="result-count">' + countLabel + ' for &ldquo;<strong>' + esc(q) + '</strong>&rdquo;</div>'
+      + '<div class="result-count">' + countLabel + pageLabel + ' for &ldquo;<strong>' + esc(q) + '</strong>&rdquo;</div>'
       + resultsHtml
+      + pagerHtml
       + '<div class="powered">' + poweredBy + ' &middot; Routed through CentOS Web</div>'
       + '</div>'
       + '<script>'
       + 'var HOST="' + host + '";'
+      + 'var Q=' + JSON.stringify(q) + ';'
       + 'function navTo(u){try{window.parent.postMessage({type:"centos-nav",url:u},"*")}catch(e){}}'
+      // Search form — navigate to new query
       + 'document.getElementById("sf").addEventListener("submit",function(e){'
-      + 'e.preventDefault();var v=document.getElementById("qi").value.trim();'
-      + 'if(!v)return;navTo("https://"+HOST+"/search?q="+encodeURIComponent(v));});'
+      + 'e.preventDefault();'
+      + 'var v=document.getElementById("qi").value.trim();'
+      + 'if(!v)return;'
+      + 'navTo("https://"+HOST+"/search?q="+encodeURIComponent(v)+"&page=1");'
+      + '});'
+      // Result clicks — open in proxy
       + 'document.addEventListener("click",function(e){'
-      + 'var a=e.target.closest("a[data-url]");if(!a)return;e.preventDefault();'
-      + 'var u=a.getAttribute("data-url");if(u)navTo("https://"+HOST+"/proxy?url="+encodeURIComponent(u));});'
+      + 'var a=e.target.closest("a[data-url],.result");'
+      + 'if(!a)return;'
+      + 'e.preventDefault();'
+      + 'var u=a.getAttribute("data-url")||a.querySelector("a[data-url]").getAttribute("data-url");'
+      + 'if(u)navTo("https://"+HOST+"/proxy?url="+encodeURIComponent(u));'
+      + '});'
+      // Pagination clicks
+      + 'document.addEventListener("click",function(e){'
+      + 'var btn=e.target.closest("a.page-btn");'
+      + 'if(!btn)return;'
+      + 'e.preventDefault();'
+      + 'var pg=btn.getAttribute("data-page");'
+      + 'if(pg)navTo("https://"+HOST+"/search?q="+encodeURIComponent(Q)+"&page="+pg);'
+      + '});'
       + '<\/script></body></html>';
 
     res.set('Content-Type', 'text/html; charset=utf-8');
