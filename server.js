@@ -128,67 +128,135 @@ function injectedJs(pageUrl, host) {
 <\/script>`;
 }
 
+// ─── Helper: extract real URL from a DDG redirect ────────────────────────────
+function unwrapDdgUrl(raw) {
+  if (!raw) return null;
+  if (/^https?:\/\//.test(raw)) return raw;
+  try {
+    const u = new URL(raw.startsWith('//') ? 'https:' + raw : raw);
+    const uddg = u.searchParams.get('uddg') || u.searchParams.get('u3');
+    if (uddg) return decodeURIComponent(uddg);
+  } catch { /* fall through */ }
+  return null;
+}
+
+// ─── Helper: fetch DDG Lite and parse results ─────────────────────────────────
+// DDG Lite (lite.duckduckgo.com/lite/) is a plain-HTML, table-based page.
+// Row layout per result:
+//   row 1: <td colspan="2"><a class="result-link" href="...">Title</a></td>
+//   row 2: <td class="result-snippet">Snippet text</td>
+//   row 3: <td><span class="link-text">display.url</span></td>
+async function fetchDdgLite(q) {
+  const body = `q=${encodeURIComponent(q)}&kl=us-en`;
+  const resp = await axios.post('https://lite.duckduckgo.com/lite/', body, {
+    timeout: 15000, httpsAgent, validateStatus: () => true, maxRedirects: 5,
+    headers: {
+      'User-Agent': UA,
+      'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Referer': 'https://duckduckgo.com/',
+      'Origin': 'https://duckduckgo.com',
+    },
+  });
+  const html = resp.data.toString('utf-8');
+  const $ = cheerio.load(html);
+  const results = [];
+
+  $('a.result-link').each((_, a) => {
+    const title   = $(a).text().trim();
+    const rawHref = $(a).attr('href') || '';
+    const href    = /^https?:/.test(rawHref) ? rawHref : unwrapDdgUrl(rawHref);
+    if (!title || !href) return;
+    const row     = $(a).closest('tr');
+    const snippet = row.nextAll('tr').find('td.result-snippet').first().text().trim();
+    const display = row.nextAll('tr').find('span.link-text').first().text().trim();
+    results.push({ title, href, snippet, displayUrl: display || href });
+  });
+
+  return { results, rawHtml: html };
+}
+
+// ─── Helper: fetch regular DDG HTML and parse results ────────────────────────
+async function fetchDdgHtml(q) {
+  const resp = await axios.get(
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}&kl=us-en`,
+    {
+      timeout: 15000, httpsAgent, validateStatus: () => true, maxRedirects: 5,
+      headers: {
+        'User-Agent': UA,
+        'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://duckduckgo.com/',
+      },
+    }
+  );
+  const html = resp.data.toString('utf-8');
+  const $ = cheerio.load(html);
+  const results = [];
+
+  $('div.result, div[class*="result"]').each((_, el) => {
+    const titleEl = $(el).find('a.result__a, h2 a, .result__title a').first();
+    const title   = titleEl.text().trim();
+    const rawHref = titleEl.attr('href') || '';
+    if (!title || !rawHref) return;
+    const href = /^https?:/.test(rawHref) ? rawHref : unwrapDdgUrl(rawHref);
+    if (!href) return;
+    const snippet = $(el).find('a.result__snippet, .result__snippet').text().trim();
+    const display = $(el).find('a.result__url, .result__url').text().trim();
+    results.push({ title, href, snippet, displayUrl: display || href });
+  });
+
+  return { results, rawHtml: html };
+}
+
+// ─── Debug endpoint — GET /search-debug?q=test ────────────────────────────────
+// Dumps raw DDG response + parsed results as JSON so you can inspect what's
+// coming back and tune selectors if DDG ever changes their markup.
+app.get('/search-debug', async (req, res) => {
+  const q = req.query.q || 'test';
+  try {
+    const [lite, main] = await Promise.allSettled([fetchDdgLite(q), fetchDdgHtml(q)]);
+    res.json({
+      lite: lite.status === 'fulfilled'
+        ? { resultCount: lite.value.results.length, firstThree: lite.value.results.slice(0,3), rawSnippet: lite.value.rawHtml.substring(0,3000) }
+        : { error: lite.reason?.message },
+      main: main.status === 'fulfilled'
+        ? { resultCount: main.value.results.length, firstThree: main.value.results.slice(0,3), rawSnippet: main.value.rawHtml.substring(0,3000) }
+        : { error: main.reason?.message },
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── Search endpoint ──────────────────────────────────────────────────────────
-// Uses DuckDuckGo's HTML endpoint — far more scraper-friendly than Bing.
-// DDG HTML returns results in a consistent structure and doesn't bot-block.
-// ─────────────────────────────────────────────────────────────────────────────
 app.get('/search', async (req, res) => {
   const q = req.query.q;
   if (!q) return res.status(400).send('Missing ?q=');
   const host = req.get('host');
 
   try {
-    // DDG HTML endpoint — no JS required, returns clean result markup
-    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
-    const upstream = await axios.post(
-      searchUrl,
-      `q=${encodeURIComponent(q)}&b=&kl=us-en`,
-      {
-        timeout: 15000,
-        httpsAgent,
-        validateStatus: () => true,
-        maxRedirects: 5,
-        headers: {
-          'User-Agent': UA,
-          'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Referer': 'https://duckduckgo.com/',
-          'Origin': 'https://duckduckgo.com',
-        },
-      }
-    );
+    // Try DDG Lite first; fall back to DDG HTML if it yields nothing
+    let results = [];
+    let rawHtml = '';
 
-    const $ = cheerio.load(upstream.data.toString('utf-8'));
+    try {
+      const lite = await fetchDdgLite(q);
+      results = lite.results;
+      rawHtml = lite.rawHtml;
+    } catch(e) { console.warn('[SEARCH] DDG Lite failed:', e.message); }
 
-    // DDG HTML result structure:
-    //   .result  →  one organic result
-    //     .result__title a.result__a  →  title + href (DDG redirect URL)
-    //     .result__url                →  display URL
-    //     .result__snippet            →  snippet
-    const results = [];
-
-    $('.result').each((_, el) => {
-      const titleEl  = $(el).find('a.result__a');
-      const title    = titleEl.text().trim();
-      const rawHref  = titleEl.attr('href') || '';
-      const snippet  = $(el).find('.result__snippet').text().trim();
-      const display  = $(el).find('.result__url').text().trim();
-
-      if (!title || !rawHref) return;
-
-      // DDG wraps real URLs in a redirect like //duckduckgo.com/l/?uddg=<encoded>
-      // Extract the real destination URL.
-      let href = rawHref;
+    if (!results.length) {
+      console.warn('[SEARCH] DDG Lite returned 0 results — trying DDG HTML...');
       try {
-        const u = new URL(rawHref.startsWith('//') ? 'https:' + rawHref : rawHref);
-        const uddg = u.searchParams.get('uddg') || u.searchParams.get('u3');
-        if (uddg) href = decodeURIComponent(uddg);
-      } catch { /* keep raw href */ }
+        const main = await fetchDdgHtml(q);
+        results = main.results;
+        rawHtml = main.rawHtml;
+      } catch(e) { console.warn('[SEARCH] DDG HTML failed:', e.message); }
+    }
 
-      if (!href || !/^https?:\/\//.test(href)) return;
-      results.push({ title, href, snippet, displayUrl: display || href });
-    });
+    if (!results.length) {
+      console.warn('[SEARCH] Both sources returned 0 results. Raw HTML (first 1000 chars):\n', rawHtml.substring(0, 1000));
+    }
 
     // Escape helper for inline HTML attributes
     const esc = s => s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
