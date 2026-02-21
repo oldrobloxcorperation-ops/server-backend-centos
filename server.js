@@ -154,11 +154,11 @@ async function fetchGoogle(q) {
 
   if (resp.status !== 200) {
     // Log the full Google error message so we can diagnose it
-    const errMsg = resp.data?.error?.message || JSON.stringify(resp.data).substring(0, 300);
+    const errMsg = (resp.data && resp.data.error && resp.data.error.message) || JSON.stringify(resp.data || {}).substring(0, 300);
     throw new Error('Google CSE HTTP ' + resp.status + ': ' + errMsg);
   }
 
-  const items = resp.data?.items || [];
+  const items = (resp.data && resp.data.items) || [];
   return items.map(r => ({
     title:      r.title,
     href:       r.link,
@@ -169,15 +169,23 @@ async function fetchGoogle(q) {
 
 
 async function fetchWiby(q) {
-  // Wiby.me -- free JSON search API, no key, no signup, works from any server IP.
   const resp = await axios.get(
     'https://wiby.me/json/?q=' + encodeURIComponent(q),
     {
-      timeout: 10000, httpsAgent, validateStatus: s => s === 200,
+      timeout: 10000, httpsAgent, validateStatus: () => true,
       headers: { 'Accept': 'application/json', 'User-Agent': UA },
     }
   );
-  const items = Array.isArray(resp.data) ? resp.data : (resp.data.results || []);
+  // Guard against non-JSON responses (Wiby sometimes returns an HTML error page)
+  let data = resp.data;
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch(e) {
+      console.warn('[SEARCH] Wiby returned non-JSON:', data.substring(0, 100));
+      return [];
+    }
+  }
+  if (!data) return [];
+  const items = Array.isArray(data) ? data : (data.results || []);
   return items.map(function(r) {
     return {
       title:      r.Title || r.title || r.URL || r.url || '',
@@ -423,6 +431,14 @@ app.post('/proxy', async (req, res) => {
     res.set('Access-Control-Allow-Origin', '*');
     res.send(r.data);
   } catch (e) { res.status(500).send(e.message); }
+});
+
+
+// Global error handler — catches any unhandled Express errors and returns 200
+// instead of crashing the serverless function with a 500
+app.use(function(err, req, res, next) {
+  console.error('[UNHANDLED]', err.message);
+  res.status(200).set('Content-Type', 'text/plain').send('Error: ' + err.message);
 });
 
 // Export for Vercel (serverless)
