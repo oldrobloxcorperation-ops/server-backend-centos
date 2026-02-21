@@ -128,47 +128,66 @@ function injectedJs(pageUrl, host) {
 <\/script>`;
 }
 
-// ─── Search via SearXNG JSON API ──────────────────────────────────────────────
-// SearXNG is open-source meta-search. Public instances expose a /search?format=json
-// endpoint that returns real results with no bot-detection, no scraping, no API key.
-// We try multiple public instances in order; first one that returns results wins.
+// ─── Search via SearXNG HTML scraping ────────────────────────────────────────
+// format=json is disabled on most public instances (returns 403).
+// HTML is ALWAYS available — and SearXNG's HTML is consistent across all
+// instances since it's open-source with a fixed template.
 //
-// Instance list sourced from https://searx.space (only instances with API enabled).
-// Add SEARXNG_URL=https://your-own-instance.example.com to .env to use your own.
+// SearXNG HTML result structure (stable across versions):
+//   <article class="result">
+//     <h3><a href="REAL_URL">Title</a></h3>
+//     <a class="url_wrapper" href="REAL_URL">display url</a>
+//     <p class="content">Snippet…</p>
+//   </article>
+//
+// Instances are tried in order; first one with results wins.
+// Set SEARXNG_URL env var to prioritise your own instance.
 // ─────────────────────────────────────────────────────────────────────────────
 const SEARXNG_INSTANCES = [
-  process.env.SEARXNG_URL,          // custom instance wins if set
+  process.env.SEARXNG_URL,
+  'https://searx.tiekoetter.com',
   'https://searx.be',
   'https://search.inetol.net',
-  'https://searx.tiekoetter.com',
   'https://opnxng.com',
   'https://searx.ox2.fr',
   'https://search.bus-hit.me',
-  'https://searx.tiekoetter.com',
 ].filter(Boolean);
 
-async function fetchSearxng(q, instanceUrl) {
-  const url = `${instanceUrl}/search?q=${encodeURIComponent(q)}&format=json&engines=google,bing,duckduckgo,brave&language=en-US`;
+async function fetchSearxngHtml(q, instanceUrl) {
+  const url = `${instanceUrl}/search?q=${encodeURIComponent(q)}&language=en-US&safesearch=0`;
   const resp = await axios.get(url, {
-    timeout: 10000,
+    timeout: 12000,
     httpsAgent,
     validateStatus: s => s === 200,
+    maxRedirects: 5,
     headers: {
       'User-Agent': UA,
-      'Accept': 'application/json',
+      'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
+      'Accept-Language': 'en-US,en;q=0.9',
     },
   });
-  const data = resp.data;
-  if (!data || !Array.isArray(data.results)) throw new Error('No results array in response');
 
-  return data.results
-    .filter(r => r.url && r.title)
-    .map(r => ({
-      title:      r.title,
-      href:       r.url,
-      snippet:    r.content || '',
-      displayUrl: r.pretty_url || r.url,
-    }));
+  const $ = cheerio.load(resp.data.toString('utf-8'));
+  const results = [];
+
+  // SearXNG wraps each result in <article class="result ...">
+  $('article.result').each((_, el) => {
+    // Title link — always inside an <h3>
+    const titleEl  = $(el).find('h3 a').first();
+    const title    = titleEl.text().trim();
+    // Real URL is on the title <a> href (not a redirect)
+    const href     = titleEl.attr('href') || '';
+    // Display URL shown to user
+    const display  = $(el).find('a.url_wrapper, .url_wrapper').text().trim()
+                  || $(el).find('.result_url, .result-url').text().trim();
+    // Snippet / content
+    const snippet  = $(el).find('p.content, .result-content, .content').first().text().trim();
+
+    if (!title || !href || !/^https?:/.test(href)) return;
+    results.push({ title, href, snippet, displayUrl: display || href });
+  });
+
+  return results;
 }
 
 // ─── Search endpoint ──────────────────────────────────────────────────────────
@@ -182,14 +201,14 @@ app.get('/search', async (req, res) => {
   let results = [];
   let lastError = 'No instances available';
 
-  // Try each SearXNG instance until one works
   for (const instance of SEARXNG_INSTANCES) {
     try {
-      results = await fetchSearxng(q, instance);
+      results = await fetchSearxngHtml(q, instance);
       if (results.length) {
         console.log(`[SEARCH] ${results.length} results from ${instance}`);
         break;
       }
+      console.warn(`[SEARCH] ${instance} returned 0 results, trying next…`);
     } catch(e) {
       lastError = `${instance}: ${e.message}`;
       console.warn(`[SEARCH] Instance failed — ${lastError}`);
