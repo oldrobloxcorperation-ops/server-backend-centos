@@ -140,31 +140,36 @@ function injectedJs(pageUrl, host) {
 //     https://api.search.marginalia.nu/search/<query>
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchGoogle(q) {
-  const key = process.env.GOOGLE_CSE_KEY;
-  const cx  = process.env.GOOGLE_CSE_CX;
-  if (!key || !cx) throw new Error('GOOGLE_CSE_KEY or GOOGLE_CSE_CX not set');
+async function fetchTavily(q) {
+  // Tavily Search API -- 1000 free searches/month, email signup only, no card ever.
+  // Sign up at https://app.tavily.com → copy your API key
+  // Set TAVILY_API_KEY in your Vercel environment variables.
+  const key = process.env.TAVILY_API_KEY;
+  if (!key) throw new Error('TAVILY_API_KEY not set');
 
-  const resp = await axios.get('https://www.googleapis.com/customsearch/v1', {
-    timeout: 10000, httpsAgent,
-    validateStatus: () => true,   // don't throw on 4xx so we can log the body
-    params: { key, cx, q, num: 10 },
-    headers: { 'Accept': 'application/json' },
-  });
+  const resp = await axios.post(
+    'https://api.tavily.com/search',
+    { api_key: key, query: q, num_results: 10 },
+    {
+      timeout: 10000, httpsAgent, validateStatus: () => true,
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    }
+  );
 
   if (resp.status !== 200) {
-    // Log the full Google error message so we can diagnose it
-    const errMsg = (resp.data && resp.data.error && resp.data.error.message) || JSON.stringify(resp.data || {}).substring(0, 300);
-    throw new Error('Google CSE HTTP ' + resp.status + ': ' + errMsg);
+    const errMsg = (resp.data && resp.data.message) || (resp.data && resp.data.error) || JSON.stringify(resp.data || {}).substring(0, 200);
+    throw new Error('Tavily HTTP ' + resp.status + ': ' + errMsg);
   }
 
-  const items = (resp.data && resp.data.items) || [];
-  return items.map(r => ({
-    title:      r.title,
-    href:       r.link,
-    snippet:    r.snippet || '',
-    displayUrl: r.displayLink || r.link,
-  }));
+  const items = (resp.data && resp.data.results) || [];
+  return items.map(function(r) {
+    return {
+      title:      r.title || '',
+      href:       r.url   || '',
+      snippet:    r.content || '',
+      displayUrl: r.url   || '',
+    };
+  }).filter(function(r) { return r.href; });
 }
 
 
@@ -208,13 +213,13 @@ app.get('/search', async (req, res) => {
 
   try {
     // Try Google CSE first (100/day free), fall back to Marginalia
-    if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) {
+    if (process.env.TAVILY_API_KEY) {
       try {
-        results = await fetchGoogle(q);
-        source = 'Google';
-        console.log('[SEARCH] ' + results.length + ' results from Google CSE');
+        results = await fetchTavily(q);
+        source = 'Tavily';
+        console.log('[SEARCH] ' + results.length + ' results from Tavily');
       } catch(e) {
-        console.warn('[SEARCH] Google CSE failed:', e.message);
+        console.warn('[SEARCH] Tavily failed:', e.message);
       }
     }
 
@@ -240,8 +245,8 @@ app.get('/search', async (req, res) => {
       }).join('');
     } else {
       resultsHtml = '<div class="no-results">No results found.<br><br>'
-        + 'To enable full web search, set <code>GOOGLE_CSE_KEY</code> and <code>GOOGLE_CSE_CX</code>.<br>'
-        + 'Free setup: <a href="https://programmablesearchengine.google.com" style="color:#6c8eff">programmablesearchengine.google.com</a>'
+        + 'To enable full web search, set <code>TAVILY_API_KEY</code> in your environment variables.<br>'
+        + 'Get a free key (no card) at <a href="https://app.tavily.com" style="color:#6c8eff">app.tavily.com</a>'
         + '</div>';
     }
 
