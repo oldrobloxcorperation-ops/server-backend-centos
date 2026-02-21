@@ -197,108 +197,111 @@ app.get('/search', async (req, res) => {
   let results = [];
   let source = '';
 
-  // Try Google CSE first (100/day free), fall back to Marginalia (always free, smaller index)
-  if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) {
-    try {
-      results = await fetchGoogle(q);
-      source = 'Google';
-      console.log(`[SEARCH] ${results.length} results from Google CSE`);
-    } catch(e) {
-      console.warn('[SEARCH] Google CSE failed:', e.message);
+  try {
+    // Try Google CSE first (100/day free), fall back to Marginalia
+    if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) {
+      try {
+        results = await fetchGoogle(q);
+        source = 'Google';
+        console.log('[SEARCH] ' + results.length + ' results from Google CSE');
+      } catch(e) {
+        console.warn('[SEARCH] Google CSE failed:', e.message);
+      }
     }
+
+    if (!results.length) {
+      try {
+        results = await fetchMarginalia(q);
+        source = 'Marginalia';
+        console.log('[SEARCH] ' + results.length + ' results from Marginalia');
+      } catch(e) {
+        console.warn('[SEARCH] Marginalia failed:', e.message);
+      }
+    }
+
+    // Build results HTML separately to avoid nested template literal issues
+    let resultsHtml = '';
+    if (results.length) {
+      resultsHtml = results.map(function(r) {
+        return '<div class="result">'
+          + '<div class="result-url">' + esc(r.displayUrl) + '</div>'
+          + '<div class="result-title"><a href="#" data-url="' + esc(r.href) + '">' + esc(r.title) + '</a></div>'
+          + '<div class="result-snippet">' + esc(r.snippet) + '</div>'
+          + '</div>';
+      }).join('');
+    } else {
+      resultsHtml = '<div class="no-results">No results found.<br><br>'
+        + 'To enable full web search, set <code>GOOGLE_CSE_KEY</code> and <code>GOOGLE_CSE_CX</code>.<br>'
+        + 'Free setup: <a href="https://programmablesearchengine.google.com" style="color:#6c8eff">programmablesearchengine.google.com</a>'
+        + '</div>';
+    }
+
+    const poweredBy = source ? 'Powered by ' + esc(source) : 'CentOS Web Proxy';
+    const countLabel = results.length + ' result' + (results.length !== 1 ? 's' : '');
+
+    const html = '<!DOCTYPE html><html><head>'
+      + '<meta charset="UTF-8">'
+      + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+      + '<title>' + esc(q) + ' — CentOS Search</title>'
+      + '<style>'
+      + '*{margin:0;padding:0;box-sizing:border-box}'
+      + 'body{font-family:"Segoe UI",system-ui,sans-serif;background:#0d0d1c;color:#f0f0f5;min-height:100vh;padding-bottom:40px}'
+      + '.topbar{background:rgba(10,10,25,0.97);border-bottom:1px solid rgba(255,255,255,0.08);padding:12px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:99}'
+      + '.logo{color:#6c8eff;font-size:18px;font-weight:700;white-space:nowrap}'
+      + '.search-form{display:flex;flex:1;gap:8px;max-width:600px}'
+      + '.search-inp{flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:22px;padding:8px 18px;color:#fff;font-size:14px;outline:none}'
+      + '.search-inp:focus{border-color:rgba(108,142,255,0.6);background:rgba(108,142,255,0.08)}'
+      + '.search-btn{background:#6c8eff;border:none;border-radius:22px;padding:8px 18px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}'
+      + '.search-btn:hover{opacity:0.85}'
+      + '.results{max-width:660px;margin:28px auto;padding:0 24px}'
+      + '.result-count{font-size:13px;color:rgba(255,255,255,0.35);margin-bottom:20px}'
+      + '.result{margin-bottom:28px}'
+      + '.result-url{font-size:12px;color:#4ce8a0;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '.result-title{font-size:18px;font-weight:500;margin-bottom:6px}'
+      + '.result-title a{color:#6c8eff;text-decoration:none;cursor:pointer}'
+      + '.result-title a:hover{text-decoration:underline}'
+      + '.result-snippet{font-size:14px;color:rgba(240,240,245,0.65);line-height:1.6}'
+      + '.no-results{text-align:center;padding:60px 20px;color:rgba(255,255,255,0.35);font-size:15px}'
+      + '.no-results code{background:rgba(255,255,255,0.06);padding:2px 7px;border-radius:4px;font-size:13px;color:#6c8eff}'
+      + '.powered{text-align:center;font-size:11px;color:rgba(255,255,255,0.15);margin-top:40px}'
+      + '</style></head><body>'
+      + '<div class="topbar">'
+      + '<span class="logo">&#x2B21; CentOS Search</span>'
+      + '<form class="search-form" id="sf">'
+      + '<input class="search-inp" id="qi" value="' + esc(q) + '" placeholder="Search the web..."/>'
+      + '<button class="search-btn" type="submit">Search</button>'
+      + '</form></div>'
+      + '<div class="results">'
+      + '<div class="result-count">' + countLabel + ' for &ldquo;<strong>' + esc(q) + '</strong>&rdquo;</div>'
+      + resultsHtml
+      + '<div class="powered">' + poweredBy + ' &middot; Routed through CentOS Web</div>'
+      + '</div>'
+      + '<script>'
+      + 'var HOST="' + host + '";'
+      + 'function navTo(u){try{window.parent.postMessage({type:"centos-nav",url:u},"*")}catch(e){}}'
+      + 'document.getElementById("sf").addEventListener("submit",function(e){'
+      + 'e.preventDefault();var v=document.getElementById("qi").value.trim();'
+      + 'if(!v)return;navTo("https://"+HOST+"/search?q="+encodeURIComponent(v));});'
+      + 'document.addEventListener("click",function(e){'
+      + 'var a=e.target.closest("a[data-url]");if(!a)return;e.preventDefault();'
+      + 'var u=a.getAttribute("data-url");if(u)navTo("https://"+HOST+"/proxy?url="+encodeURIComponent(u));});'
+      + '<\/script></body></html>';
+
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.set('Access-Control-Allow-Origin', '*');
+    res.removeHeader('X-Frame-Options');
+    res.set('Content-Security-Policy', 'frame-ancestors *');
+    res.send(html);
+
+  } catch(err) {
+    console.error('[SEARCH] Unhandled error:', err.message);
+    res.status(200).set('Content-Type', 'text/html').send(
+      '<html><body style="background:#0d0d1c;color:#fff;font-family:system-ui;padding:40px;text-align:center">'
+      + '<h2 style="color:#6c8eff">Search error</h2>'
+      + '<p style="color:rgba(255,255,255,0.5);margin-top:12px">' + esc(err.message) + '</p>'
+      + '</body></html>'
+    );
   }
-
-  if (!results.length) {
-    try {
-      results = await fetchMarginalia(q);
-      source = 'Marginalia';
-      console.log(`[SEARCH] ${results.length} results from Marginalia`);
-    } catch(e) {
-      console.warn('[SEARCH] Marginalia failed:', e.message);
-    }
-  }
-
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${esc(q)} — CentOS Search</title>
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d0d1c;color:#f0f0f5;min-height:100vh;padding-bottom:40px}
-    .topbar{background:rgba(10,10,25,0.97);border-bottom:1px solid rgba(255,255,255,0.08);padding:12px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:99}
-    .logo{color:#6c8eff;font-size:18px;font-weight:700;white-space:nowrap}
-    .search-form{display:flex;flex:1;gap:8px;max-width:600px}
-    .search-inp{flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:22px;padding:8px 18px;color:#fff;font-size:14px;outline:none}
-    .search-inp:focus{border-color:rgba(108,142,255,0.6);background:rgba(108,142,255,0.08)}
-    .search-btn{background:#6c8eff;border:none;border-radius:22px;padding:8px 18px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
-    .search-btn:hover{opacity:0.85}
-    .results{max-width:660px;margin:28px auto;padding:0 24px}
-    .result-count{font-size:13px;color:rgba(255,255,255,0.35);margin-bottom:20px}
-    .result{margin-bottom:28px}
-    .result-url{font-size:12px;color:#4ce8a0;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .result-title{font-size:18px;font-weight:500;margin-bottom:6px}
-    .result-title a{color:#6c8eff;text-decoration:none;cursor:pointer}
-    .result-title a:hover{text-decoration:underline}
-    .result-snippet{font-size:14px;color:rgba(240,240,245,0.65);line-height:1.6}
-    .no-results{text-align:center;padding:60px 20px;color:rgba(255,255,255,0.35);font-size:15px}
-    .no-results code{background:rgba(255,255,255,0.06);padding:2px 7px;border-radius:4px;font-size:13px;color:#6c8eff}
-    .powered{text-align:center;font-size:11px;color:rgba(255,255,255,0.15);margin-top:40px}
-  </style>
-</head>
-<body>
-  <div class="topbar">
-    <span class="logo">&#x2B21; CentOS Search</span>
-    <form class="search-form" id="sf">
-      <input class="search-inp" id="qi" value="${esc(q)}" placeholder="Search the web&hellip;"/>
-      <button class="search-btn" type="submit">Search</button>
-    </form>
-  </div>
-  <div class="results">
-    <div class="result-count">${results.length} result${results.length !== 1 ? 's' : ''} for &ldquo;<strong>${esc(q)}</strong>&rdquo;</div>
-    ${results.length
-      ? results.map(r => `
-      <div class="result">
-        <div class="result-url">${esc(r.displayUrl)}</div>
-        <div class="result-title"><a href="#" data-url="${esc(r.href)}">${esc(r.title)}</a></div>
-        <div class="result-snippet">${esc(r.snippet)}</div>
-      </div>`).join('')
-      : `<div class="no-results">
-          No results found.<br><br>
-          To enable full web search, set <code>GOOGLE_CSE_KEY</code> and <code>GOOGLE_CSE_CX</code>.<br>
-          Free setup (2 min): <a href="https://programmablesearchengine.google.com" style="color:#6c8eff">programmablesearchengine.google.com</a>
-        </div>`
-    }
-    <div class="powered">${source ? `Powered by ${esc(source)}` : 'CentOS Web Proxy'} &middot; Routed through CentOS Web</div>
-  </div>
-  <script>
-    var HOST = '${host}';
-    function navTo(url) {
-      try { window.parent.postMessage({ type: 'centos-nav', url: url }, '*'); } catch(e) {}
-    }
-    document.getElementById('sf').addEventListener('submit', function(e) {
-      e.preventDefault();
-      var v = document.getElementById('qi').value.trim();
-      if (!v) return;
-      navTo('https://' + HOST + '/search?q=' + encodeURIComponent(v));
-    });
-    document.addEventListener('click', function(e) {
-      var a = e.target.closest('a[data-url]');
-      if (!a) return;
-      e.preventDefault();
-      var url = a.getAttribute('data-url');
-      if (url) navTo('https://' + HOST + '/proxy?url=' + encodeURIComponent(url));
-    });
-  </script>
-</body>
-</html>`;
-
-  res.set('Content-Type', 'text/html; charset=utf-8');
-  res.set('Access-Control-Allow-Origin', '*');
-  res.removeHeader('X-Frame-Options');
-  res.set('Content-Security-Policy', 'frame-ancestors *');
-  res.send(html);
 });
 
 app.get('/proxy', async (req, res) => {
