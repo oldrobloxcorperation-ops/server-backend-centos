@@ -73,15 +73,14 @@ function injectedJs(pageUrl, host) {
   var _x=XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open=function(m,u){ if(/^https?:/.test(u)) u=P+encodeURIComponent(u); return _x.apply(this,arguments); };
 
-  // Intercept history.pushState / replaceState (Google, SPAs)
-  // Only hijack if the resolved URL is http/https AND a different origin
+  // Intercept history.pushState / replaceState
+  // In srcdoc context there's no real URL, so ALL navigations must go through proxy
   var _push=history.pushState, _repl=history.replaceState;
   function interceptState(u){
     if(!u) return false;
     try{
       var resolved=new URL(String(u),B).href;
       if(!/^https?:/.test(resolved)) return false;
-      if(new URL(resolved).origin===new URL(B).origin) return false; // same-origin SPA nav, let it go
       navTo(resolved); return true;
     }catch{ return false; }
   }
@@ -94,7 +93,6 @@ function injectedJs(pageUrl, host) {
     try{
       var resolved=new URL(String(u),B).href;
       if(!/^https?:/.test(resolved)) return false;
-      if(new URL(resolved).origin===new URL(B).origin) return false;
       navTo(resolved); return true;
     }catch{ return false; }
   }
