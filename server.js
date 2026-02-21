@@ -154,36 +154,48 @@ const SEARXNG_INSTANCES = [
 ].filter(Boolean);
 
 async function fetchSearxngHtml(q, instanceUrl) {
-  // SearXNG requires a session cookie set by visiting the homepage first.
-  // Without it, the server returns the index page instead of search results.
-  // Step 1: GET homepage to collect the session cookie (client_id + client_secret etc.)
-  let cookieHeader = '';
-  try {
-    const homeResp = await axios.get(instanceUrl + '/', {
-      timeout: 8000, httpsAgent, validateStatus: () => true, maxRedirects: 3,
-      headers: { 'User-Agent': UA, 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' },
-    });
-    const setCookies = homeResp.headers['set-cookie'];
-    if (Array.isArray(setCookies)) {
-      cookieHeader = setCookies.map(c => c.split(';')[0]).join('; ');
-    }
-  } catch(e) {
-    console.warn(`[SEARCH] Cookie prefetch failed for ${instanceUrl}:`, e.message);
-  }
+  // SearXNG protects searches with a CSRF token embedded in the homepage form.
+  // We must: 1) GET / to collect cookies + extract the token, 2) POST /search with both.
 
-  // Step 2: GET the search with the session cookie + exact browser params
-  const url = `${instanceUrl}/search?q=${encodeURIComponent(q)}&category_general=1&language=en-US&time_range=&safesearch=0&theme=simple`;
+  // Step 1: fetch homepage
+  const homeResp = await axios.get(instanceUrl + '/', {
+    timeout: 8000, httpsAgent, validateStatus: () => true, maxRedirects: 3,
+    headers: { 'User-Agent': UA, 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' },
+  });
 
-  const headers = {
-    'User-Agent': UA,
-    'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': `${instanceUrl}/`,
-  };
-  if (cookieHeader) headers['Cookie'] = cookieHeader;
+  // Collect session cookies
+  const setCookies = homeResp.headers['set-cookie'] || [];
+  const cookieHeader = setCookies.map(c => c.split(';')[0]).join('; ');
 
-  const resp = await axios.get(url, {
-    timeout: 12000, httpsAgent, validateStatus: s => s === 200, maxRedirects: 5, headers,
+  // Extract CSRF token from the search form
+  const $home = cheerio.load(homeResp.data.toString('utf-8'));
+  const token = $home('form[action="/search"] input[name="token"]').attr('value')
+             || $home('input[name="token"]').attr('value')
+             || '';
+
+  console.log(`[SEARCH] ${instanceUrl} — cookie: ${cookieHeader ? 'yes' : 'no'}, token: ${token ? token.substring(0,12)+'...' : 'MISSING'}`);
+
+  // Step 2: POST /search exactly like the browser form does
+  const params = new URLSearchParams({
+    q,
+    ...(token ? { token } : {}),
+    category_general: '1',
+    language: 'en-US',
+    time_range: '',
+    safesearch: '0',
+    theme: 'simple',
+  });
+
+  const resp = await axios.post(`${instanceUrl}/search`, params.toString(), {
+    timeout: 12000, httpsAgent, validateStatus: s => s === 200, maxRedirects: 5,
+    headers: {
+      'User-Agent': UA,
+      'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Referer': `${instanceUrl}/`,
+      ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
+    },
   });
 
   const html = resp.data.toString('utf-8');
@@ -201,7 +213,6 @@ async function fetchSearxngHtml(q, instanceUrl) {
   });
 
   if (!results.length) {
-    // Check if we're still getting the index page
     const endpoint = $('meta[name="endpoint"]').attr('content');
     console.warn(`[SEARCH] 0 results from ${instanceUrl}. endpoint=${endpoint}. HTML snippet:`, html.substring(0, 300));
   }
