@@ -64,9 +64,7 @@ function injectedJs(pageUrl, host) {
   function safeResolve(u){
     if(!u) return null;
     var s=String(u);
-    // Already absolute
     if(/^https?:\/\//.test(s)) return s;
-    // Relative — resolve against base
     if(B && /^https?:\/\//.test(B)){
       try{ return new URL(s,B).href; }catch{ return null; }
     }
@@ -77,15 +75,12 @@ function injectedJs(pageUrl, host) {
     try{ window.parent.postMessage({type:'centos-nav',url:url},'*'); }catch{}
   }
 
-  // Intercept fetch
   var _f=window.fetch;
   window.fetch=function(r,o){ if(typeof r==='string'&&/^https?:/.test(r)) r=P+encodeURIComponent(r); return _f(r,o); };
 
-  // Intercept XHR
   var _x=XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open=function(m,u){ if(/^https?:/.test(u)) u=P+encodeURIComponent(u); return _x.apply(this,arguments); };
 
-  // Intercept history.pushState / replaceState
   var _push=history.pushState, _repl=history.replaceState;
   function interceptState(u){
     var resolved=safeResolve(u);
@@ -95,7 +90,6 @@ function injectedJs(pageUrl, host) {
   history.pushState=function(s,t,u){ if(interceptState(u)) return; return _push.apply(this,arguments); };
   history.replaceState=function(s,t,u){ if(interceptState(u)) return; return _repl.apply(this,arguments); };
 
-  // Intercept window.location.href setter, assign, replace
   function interceptLoc(u){
     var resolved=safeResolve(u);
     if(!resolved) return false;
@@ -113,7 +107,6 @@ function injectedJs(pageUrl, host) {
     Location.prototype.replace=function(u){ if(interceptLoc(u)) return; _lr.call(this,u); };
   }catch(e){}
 
-  // Intercept link clicks
   document.addEventListener('click',function(e){
     var a=e.target.closest('a'); if(!a) return;
     var h=a.getAttribute('href');
@@ -123,7 +116,6 @@ function injectedJs(pageUrl, host) {
     if(resolved) navTo(resolved);
   },true);
 
-  // Intercept form submits
   document.addEventListener('submit',function(e){
     var f=e.target, m=(f.method||'GET').toUpperCase();
     if(m!=='GET') return;
@@ -136,46 +128,77 @@ function injectedJs(pageUrl, host) {
 <\/script>`;
 }
 
-// Search endpoint — fetches Bing results server-side, rewrites links through proxy
+// ─── Search endpoint ──────────────────────────────────────────────────────────
+// Uses DuckDuckGo's HTML endpoint — far more scraper-friendly than Bing.
+// DDG HTML returns results in a consistent structure and doesn't bot-block.
+// ─────────────────────────────────────────────────────────────────────────────
 app.get('/search', async (req, res) => {
   const q = req.query.q;
   if (!q) return res.status(400).send('Missing ?q=');
   const host = req.get('host');
 
   try {
-    const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}&setlang=en`;
-    const upstream = await axios.get(searchUrl, {
-      timeout: 15000, httpsAgent, validateStatus: () => true,
-      headers: {
-        'User-Agent': UA,
-        'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
+    // DDG HTML endpoint — no JS required, returns clean result markup
+    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+    const upstream = await axios.post(
+      searchUrl,
+      `q=${encodeURIComponent(q)}&b=&kl=us-en`,
+      {
+        timeout: 15000,
+        httpsAgent,
+        validateStatus: () => true,
+        maxRedirects: 5,
+        headers: {
+          'User-Agent': UA,
+          'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Referer': 'https://duckduckgo.com/',
+          'Origin': 'https://duckduckgo.com',
+        },
       }
-    });
+    );
 
     const $ = cheerio.load(upstream.data.toString('utf-8'));
 
-    // Extract Bing search results
+    // DDG HTML result structure:
+    //   .result  →  one organic result
+    //     .result__title a.result__a  →  title + href (DDG redirect URL)
+    //     .result__url                →  display URL
+    //     .result__snippet            →  snippet
     const results = [];
-    $('#b_results .b_algo').each((_, el) => {
-      const titleEl = $(el).find('h2 a');
-      const title = titleEl.text().trim();
-      const href = titleEl.attr('href');
-      const snippet = $(el).find('.b_caption p').text().trim();
-      const displayUrl = $(el).find('cite').text().trim();
-      if (title && href && /^https?:/.test(href)) {
-        results.push({ title, href, snippet, displayUrl });
-      }
+
+    $('.result').each((_, el) => {
+      const titleEl  = $(el).find('a.result__a');
+      const title    = titleEl.text().trim();
+      const rawHref  = titleEl.attr('href') || '';
+      const snippet  = $(el).find('.result__snippet').text().trim();
+      const display  = $(el).find('.result__url').text().trim();
+
+      if (!title || !rawHref) return;
+
+      // DDG wraps real URLs in a redirect like //duckduckgo.com/l/?uddg=<encoded>
+      // Extract the real destination URL.
+      let href = rawHref;
+      try {
+        const u = new URL(rawHref.startsWith('//') ? 'https:' + rawHref : rawHref);
+        const uddg = u.searchParams.get('uddg') || u.searchParams.get('u3');
+        if (uddg) href = decodeURIComponent(uddg);
+      } catch { /* keep raw href */ }
+
+      if (!href || !/^https?:\/\//.test(href)) return;
+      results.push({ title, href, snippet, displayUrl: display || href });
     });
 
-    // Build clean results page
+    // Escape helper for inline HTML attributes
+    const esc = s => s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
     const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${q} — CentOS Search</title>
+  <title>${esc(q)} — CentOS Search</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d0d1c;color:#f0f0f5;min-height:100vh;padding-bottom:40px}
@@ -191,7 +214,7 @@ app.get('/search', async (req, res) => {
     .result{margin-bottom:28px}
     .result-url{font-size:12px;color:#4ce8a0;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .result-title{font-size:18px;font-weight:500;margin-bottom:6px}
-    .result-title a{color:#6c8eff;text-decoration:none}
+    .result-title a{color:#6c8eff;text-decoration:none;cursor:pointer}
     .result-title a:hover{text-decoration:underline}
     .result-snippet{font-size:14px;color:rgba(240,240,245,0.65);line-height:1.6}
     .no-results{text-align:center;padding:60px 20px;color:rgba(255,255,255,0.35);font-size:15px}
@@ -201,32 +224,47 @@ app.get('/search', async (req, res) => {
 <body>
   <div class="topbar">
     <span class="logo">⬡ CentOS Search</span>
-    <form class="search-form" onsubmit="doSearch(event)">
-      <input class="search-inp" id="q" value="${q.replace(/"/g,'&quot;')}" placeholder="Search the web…"/>
+    <form class="search-form" id="sf">
+      <input class="search-inp" id="q" value="${esc(q)}" placeholder="Search the web…"/>
       <button class="search-btn" type="submit">Search</button>
     </form>
   </div>
   <div class="results">
-    <div class="result-count">${results.length} results for "<strong>${q}</strong>"</div>
-    ${results.length ? results.map(r => `
+    <div class="result-count">${results.length} result${results.length !== 1 ? 's' : ''} for "<strong>${esc(q)}</strong>"</div>
+    ${results.length
+      ? results.map(r => `
       <div class="result">
-        <div class="result-url">${r.displayUrl || r.href}</div>
-        <div class="result-title"><a href="https://${host}/proxy?url=${encodeURIComponent(r.href)}" onclick="navigate(event,'${encodeURIComponent(r.href)}')">${r.title}</a></div>
-        <div class="result-snippet">${r.snippet}</div>
-      </div>`).join('') : `<div class="no-results">No results found. Try a different search.</div>`}
-    <div class="powered">Powered by Bing · Routed through CentOS Web Proxy</div>
+        <div class="result-url">${esc(r.displayUrl)}</div>
+        <div class="result-title"><a href="#" data-url="${esc(r.href)}">${esc(r.title)}</a></div>
+        <div class="result-snippet">${esc(r.snippet)}</div>
+      </div>`).join('')
+      : `<div class="no-results">No results found. Try a different search.</div>`
+    }
+    <div class="powered">Powered by DuckDuckGo · Routed through CentOS Web Proxy</div>
   </div>
   <script>
-    function doSearch(e){
-      e.preventDefault();
-      var q=document.getElementById('q').value.trim();
-      if(!q) return;
-      try{ window.parent.postMessage({type:'centos-nav',url:'https://${host}/search?q='+encodeURIComponent(q)},'*'); }catch{}
+    var HOST = '${host}';
+
+    function navTo(url) {
+      try { window.parent.postMessage({ type: 'centos-nav', url: url }, '*'); } catch(e) {}
     }
-    function navigate(e,encodedUrl){
+
+    // Search form submit
+    document.getElementById('sf').addEventListener('submit', function(e) {
       e.preventDefault();
-      try{ window.parent.postMessage({type:'centos-nav',url:'https://${host}/proxy?url='+encodedUrl},'*'); }catch{}
-    }
+      var q = document.getElementById('q').value.trim();
+      if (!q) return;
+      navTo('https://' + HOST + '/search?q=' + encodeURIComponent(q));
+    });
+
+    // Result link clicks — use event delegation so no inline handlers needed
+    document.addEventListener('click', function(e) {
+      var a = e.target.closest('a[data-url]');
+      if (!a) return;
+      e.preventDefault();
+      var url = a.getAttribute('data-url');
+      if (url) navTo('https://' + HOST + '/proxy?url=' + encodeURIComponent(url));
+    });
   </script>
 </body>
 </html>`;
@@ -260,7 +298,6 @@ app.get('/proxy', async (req, res) => {
     });
     const ct = upstream.headers['content-type'] || '';
 
-    // Strip ALL headers that could cause framing/CORS issues
     const BLOCKED_HEADERS = [
       'x-frame-options',
       'content-security-policy',
