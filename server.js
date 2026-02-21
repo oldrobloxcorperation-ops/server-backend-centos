@@ -74,21 +74,40 @@ function injectedJs(pageUrl, host) {
   XMLHttpRequest.prototype.open=function(m,u){ if(/^https?:/.test(u)) u=P+encodeURIComponent(u); return _x.apply(this,arguments); };
 
   // Intercept history.pushState / replaceState (Google, SPAs)
+  // Only hijack if the resolved URL is http/https AND a different origin
   var _push=history.pushState, _repl=history.replaceState;
-  history.pushState=function(s,t,u){ if(u){ try{ navTo(new URL(String(u),B).href); }catch{} return; } return _push.apply(this,arguments); };
-  history.replaceState=function(s,t,u){ if(u){ try{ navTo(new URL(String(u),B).href); }catch{} return; } return _repl.apply(this,arguments); };
+  function interceptState(u){
+    if(!u) return false;
+    try{
+      var resolved=new URL(String(u),B).href;
+      if(!/^https?:/.test(resolved)) return false;
+      if(new URL(resolved).origin===new URL(B).origin) return false; // same-origin SPA nav, let it go
+      navTo(resolved); return true;
+    }catch{ return false; }
+  }
+  history.pushState=function(s,t,u){ if(interceptState(u)) return; return _push.apply(this,arguments); };
+  history.replaceState=function(s,t,u){ if(interceptState(u)) return; return _repl.apply(this,arguments); };
 
   // Intercept window.location.href setter, assign, replace
+  function interceptLoc(u){
+    if(!u) return false;
+    try{
+      var resolved=new URL(String(u),B).href;
+      if(!/^https?:/.test(resolved)) return false;
+      if(new URL(resolved).origin===new URL(B).origin) return false;
+      navTo(resolved); return true;
+    }catch{ return false; }
+  }
   try{
     var _ld=Object.getOwnPropertyDescriptor(Location.prototype,'href');
     Object.defineProperty(Location.prototype,'href',{
       get:_ld.get,
-      set:function(u){ if(/^https?:/.test(u)){ try{ navTo(new URL(u,B).href); }catch{} return; } _ld.set.call(this,u); }
+      set:function(u){ if(interceptLoc(u)) return; _ld.set.call(this,u); }
     });
     var _la=Location.prototype.assign;
-    Location.prototype.assign=function(u){ if(/^https?:/.test(u)){ try{ navTo(new URL(u,B).href); }catch{} return; } _la.call(this,u); };
+    Location.prototype.assign=function(u){ if(interceptLoc(u)) return; _la.call(this,u); };
     var _lr=Location.prototype.replace;
-    Location.prototype.replace=function(u){ if(/^https?:/.test(u)){ try{ navTo(new URL(u,B).href); }catch{} return; } _lr.call(this,u); };
+    Location.prototype.replace=function(u){ if(interceptLoc(u)) return; _lr.call(this,u); };
   }catch(e){}
 
   // Intercept link clicks
