@@ -134,75 +134,82 @@ function rewriteCss(css, base, host) {
   });
 }
 function injectedJs(pageUrl, host) {
-  return `<script>
-(function(){
-  var P='https://${host}/proxy?url=', B='${pageUrl}';
-
-  function safeResolve(u){
-    if(!u) return null;
-    var s=String(u);
-    if(/^https?:\/\//.test(s)) return s;
-    if(B && /^https?:\/\//.test(B)){
-      try{ return new URL(s,B).href; }catch{ return null; }
-    }
-    return null;
-  }
-
-  function navTo(url){
-    try{ window.parent.postMessage({type:'centos-nav',url:url},'*'); }catch{}
-  }
-
-  var _f=window.fetch;
-  window.fetch=function(r,o){ if(typeof r==='string'&&/^https?:/.test(r)) r=P+encodeURIComponent(r); return _f(r,o); };
-
-  var _x=XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open=function(m,u){ if(/^https?:/.test(u)) u=P+encodeURIComponent(u); return _x.apply(this,arguments); };
-
-  var _push=history.pushState, _repl=history.replaceState;
-  function interceptState(u){
-    var resolved=safeResolve(u);
-    if(!resolved) return false;
-    navTo(resolved); return true;
-  }
-  history.pushState=function(s,t,u){ if(interceptState(u)) return; return _push.apply(this,arguments); };
-  history.replaceState=function(s,t,u){ if(interceptState(u)) return; return _repl.apply(this,arguments); };
-
-  function interceptLoc(u){
-    var resolved=safeResolve(u);
-    if(!resolved) return false;
-    navTo(resolved); return true;
-  }
-  try{
-    var _ld=Object.getOwnPropertyDescriptor(Location.prototype,'href');
-    Object.defineProperty(Location.prototype,'href',{
-      get:_ld.get,
-      set:function(u){ if(interceptLoc(u)) return; _ld.set.call(this,u); }
-    });
-    var _la=Location.prototype.assign;
-    Location.prototype.assign=function(u){ if(interceptLoc(u)) return; _la.call(this,u); };
-    var _lr=Location.prototype.replace;
-    Location.prototype.replace=function(u){ if(interceptLoc(u)) return; _lr.call(this,u); };
-  }catch(e){}
-
-  document.addEventListener('click',function(e){
-    var a=e.target.closest('a'); if(!a) return;
-    var h=a.getAttribute('href');
-    if(!h||/^(#|javascript:|mailto:|tel:)/.test(h)) return;
-    e.preventDefault();
-    var resolved=safeResolve(h);
-    if(resolved) navTo(resolved);
-  },true);
-
-  document.addEventListener('submit',function(e){
-    var f=e.target, m=(f.method||'GET').toUpperCase();
-    if(m!=='GET') return;
-    e.preventDefault();
-    var resolved=safeResolve(f.action||B);
-    if(!resolved) return;
-    navTo(resolved+'?'+new URLSearchParams(new FormData(f)));
-  },true);
-})();
-<\/script>`;
+  const P = 'https://' + host + '/proxy?url=';
+  return '<script>\n(function(){\n'
+    + '  var P="' + P + '", B=' + JSON.stringify(pageUrl) + ';\n'
+    + '\n'
+    + '  function safeResolve(u){\n'
+    + '    if(!u) return null;\n'
+    + '    var s=String(u);\n'
+    + '    if(/^https?:\\/\\//.test(s)) return s;\n'
+    + '    if(B && /^https?:\\/\\//.test(B)){ try{ return new URL(s,B).href; }catch(e){ return null; } }\n'
+    + '    return null;\n'
+    + '  }\n'
+    + '\n'
+    + '  function navTo(url){ try{ window.parent.postMessage({type:"centos-nav",url:url},"*"); }catch(e){} }\n'
+    + '\n'
+    + '  // Fetch\n'
+    + '  var _f=window.fetch;\n'
+    + '  window.fetch=function(r,o){\n'
+    + '    if(r && typeof r==="string" && /^https?:/.test(r)) r=P+encodeURIComponent(r);\n'
+    + '    else if(r && typeof r==="object" && r.url && /^https?:/.test(r.url)) r=new Request(P+encodeURIComponent(r.url),r);\n'
+    + '    return _f.call(this,r,o);\n'
+    + '  };\n'
+    + '\n'
+    + '  // XHR\n'
+    + '  var _x=XMLHttpRequest.prototype.open;\n'
+    + '  XMLHttpRequest.prototype.open=function(m,u){ if(typeof u==="string"&&/^https?:/.test(u)) u=P+encodeURIComponent(u); return _x.apply(this,arguments); };\n'
+    + '\n'
+    + '  // Webpack public path patch (CRA / Next.js chunk loading)\n'
+    + '  try{ if(typeof __webpack_require__!=="undefined" && __webpack_require__.p){ var op=__webpack_require__.p; var ap=safeResolve(op)||op; __webpack_require__.p=P+encodeURIComponent(ap.endsWith("/")?ap:ap+"/"); } }catch(e){}\n'
+    + '\n'
+    + '  // history (React Router)\n'
+    + '  var _push=history.pushState, _repl=history.replaceState;\n'
+    + '  function interceptState(u){ if(!u) return false; var r=safeResolve(u); if(!r) return false; navTo(r); return true; }\n'
+    + '  history.pushState=function(s,t,u){ if(u&&interceptState(u)) return; return _push.apply(this,arguments); };\n'
+    + '  history.replaceState=function(s,t,u){ if(u&&interceptState(u)) return; return _repl.apply(this,arguments); };\n'
+    + '\n'
+    + '  // location.href\n'
+    + '  function interceptLoc(u){ var r=safeResolve(u); if(!r) return false; navTo(r); return true; }\n'
+    + '  try{\n'
+    + '    var _ld=Object.getOwnPropertyDescriptor(Location.prototype,"href");\n'
+    + '    Object.defineProperty(Location.prototype,"href",{ get:_ld.get, set:function(u){ if(interceptLoc(u)) return; _ld.set.call(this,u); } });\n'
+    + '    Location.prototype.assign=function(u){ if(interceptLoc(u)) return; window.location.href=u; };\n'
+    + '    Location.prototype.replace=function(u){ if(interceptLoc(u)) return; _ld.set.call(this,u); };\n'
+    + '  }catch(e){}\n'
+    + '\n'
+    + '  // Link clicks\n'
+    + '  document.addEventListener("click",function(e){\n'
+    + '    var a=e.target.closest("a"); if(!a) return;\n'
+    + '    var h=a.getAttribute("href");\n'
+    + '    if(!h||/^(#|javascript:|mailto:|tel:)/.test(h)) return;\n'
+    + '    e.preventDefault();\n'
+    + '    var r=safeResolve(h); if(r) navTo(r);\n'
+    + '  },true);\n'
+    + '\n'
+    + '  // Form submits\n'
+    + '  document.addEventListener("submit",function(e){\n'
+    + '    var f=e.target, m=(f.method||"GET").toUpperCase();\n'
+    + '    if(m!=="GET") return;\n'
+    + '    e.preventDefault();\n'
+    + '    var r=safeResolve(f.action||B); if(!r) return;\n'
+    + '    navTo(r+"?"+new URLSearchParams(new FormData(f)));\n'
+    + '  },true);\n'
+    + '\n'
+    + '  // MutationObserver — catch dynamically injected <script src> / <link href> (React chunk loading)\n'
+    + '  try{\n'
+    + '    new MutationObserver(function(muts){\n'
+    + '      muts.forEach(function(m){\n'
+    + '        m.addedNodes.forEach(function(node){\n'
+    + '          if(node.tagName==="SCRIPT"&&node.src&&/^https?:/.test(node.src)&&!node.src.includes("/proxy?url=")) node.src=P+encodeURIComponent(node.src);\n'
+    + '          if(node.tagName==="LINK"&&node.href&&/^https?:/.test(node.href)&&!node.href.includes("/proxy?url=")) node.href=P+encodeURIComponent(node.href);\n'
+    + '        });\n'
+    + '      });\n'
+    + '    }).observe(document.documentElement,{childList:true,subtree:true});\n'
+    + '  }catch(e){}\n'
+    + '\n'
+    + '})();\n'
+    + '<\/script>';
 }
 
 // ─── Search ───────────────────────────────────────────────────────────────────
@@ -500,7 +507,16 @@ app.get('/proxy', async (req, res) => {
     }
     if (ct.includes('javascript') || ct.includes('ecmascript')) {
       res.set('Content-Type', ct);
-      return res.send(body);
+      // Rewrite absolute URLs in JS bundles (webpack publicPath, Vite asset imports)
+      // so chunk fetches and API calls go through the proxy automatically
+      const jsRewritten = body.replace(
+        /(["\`])(https?:\/\/[^"'\`\s]{8,})(["\`])/g,
+        function(match, q1, url, q2) {
+          if (url.startsWith('data:') || url.includes('/proxy?url=')) return match;
+          return q1 + makeProxyUrl(url, host) + q2;
+        }
+      );
+      return res.send(jsRewritten);
     }
     if (ct.includes('html') || ct.includes('xhtml')) {
       const $ = cheerio.load(body, { decodeEntities: false });
@@ -521,6 +537,26 @@ app.get('/proxy', async (req, res) => {
       $('a[href]').each((_, el) => rw(el, 'href'));
       $('link[href]').each((_, el) => rw(el, 'href'));
       $('script[src]').each((_, el) => rw(el, 'src'));
+      $('script[type="module"][src]').each((_, el) => rw(el, 'src'));
+      $('link[rel="modulepreload"]').each((_, el) => rw(el, 'href'));
+      $('link[rel="preload"]').each((_, el) => rw(el, 'href'));
+      // Rewrite import maps so dynamic import() calls resolve through proxy
+      $('script[type="importmap"]').each((_, el) => {
+        try {
+          const map = JSON.parse($(el).html() || '{}');
+          if (map.imports) Object.keys(map.imports).forEach(k => {
+            const abs = resolveUrl(raw, map.imports[k]);
+            if (abs) map.imports[k] = makeProxyUrl(abs, host);
+          });
+          if (map.scopes) Object.keys(map.scopes).forEach(scope => {
+            Object.keys(map.scopes[scope]).forEach(k => {
+              const abs = resolveUrl(raw, map.scopes[scope][k]);
+              if (abs) map.scopes[scope][k] = makeProxyUrl(abs, host);
+            });
+          });
+          $(el).html(JSON.stringify(map));
+        } catch(e) {}
+      });
       $('img[src]').each((_, el) => rw(el, 'src'));
       $('img[srcset], source[srcset]').each((_, el) => {
         const s = $(el).attr('srcset') || '';
