@@ -128,96 +128,58 @@ function injectedJs(pageUrl, host) {
 <\/script>`;
 }
 
-// ─── Search via SearXNG HTML scraping ────────────────────────────────────────
-// format=json is disabled on most public instances (returns 403).
-// HTML is ALWAYS available — and SearXNG's HTML is consistent across all
-// instances since it's open-source with a fixed template.
+// ─── Search ───────────────────────────────────────────────────────────────────
+// Public SearXNG instances block datacenter/Vercel IPs at the network level.
+// Instead we use two real APIs:
 //
-// SearXNG HTML result structure (stable across versions):
-//   <article class="result">
-//     <h3><a href="REAL_URL">Title</a></h3>
-//     <a class="url_wrapper" href="REAL_URL">display url</a>
-//     <p class="content">Snippet…</p>
-//   </article>
+//  1. Brave Search API  — best quality; free tier 2k req/month
+//     Sign up at https://brave.com/search/api/ and set BRAVE_SEARCH_KEY env var.
 //
-// Instances are tried in order; first one with results wins.
-// Set SEARXNG_URL env var to prioritise your own instance.
+//  2. Marginalia Search API — totally free, no key, works from any IP.
+//     Smaller indie-web index but returns real JSON results with no auth.
+//     https://api.search.marginalia.nu/search/<query>
 // ─────────────────────────────────────────────────────────────────────────────
-const SEARXNG_INSTANCES = [
-  process.env.SEARXNG_URL,
-  'https://searx.tiekoetter.com',
-  'https://searx.be',
-  'https://search.inetol.net',
-  'https://opnxng.com',
-  'https://searx.ox2.fr',
-  'https://search.bus-hit.me',
-].filter(Boolean);
 
-async function fetchSearxngHtml(q, instanceUrl) {
-  // SearXNG protects searches with a CSRF token embedded in the homepage form.
-  // We must: 1) GET / to collect cookies + extract the token, 2) POST /search with both.
+async function fetchBrave(q) {
+  const key = process.env.BRAVE_SEARCH_KEY;
+  if (!key) throw new Error('BRAVE_SEARCH_KEY not set');
+  const resp = await axios.get(
+    `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=20`,
+    {
+      timeout: 10000, httpsAgent, validateStatus: s => s === 200,
+      headers: {
+        'Accept': 'application/json',
+        'Accept-Encoding': 'gzip',
+        'X-Subscription-Token': key,
+      },
+    }
+  );
+  const items = resp.data?.web?.results || [];
+  return items.map(r => ({
+    title:      r.title,
+    href:       r.url,
+    snippet:    r.description || '',
+    displayUrl: r.meta_url?.hostname || r.url,
+  }));
+}
 
-  // Step 1: fetch homepage
-  const homeResp = await axios.get(instanceUrl + '/', {
-    timeout: 8000, httpsAgent, validateStatus: () => true, maxRedirects: 3,
-    headers: { 'User-Agent': UA, 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' },
-  });
-
-  // Collect session cookies
-  const setCookies = homeResp.headers['set-cookie'] || [];
-  const cookieHeader = setCookies.map(c => c.split(';')[0]).join('; ');
-
-  // Extract CSRF token from the search form
-  const $home = cheerio.load(homeResp.data.toString('utf-8'));
-  const token = $home('form[action="/search"] input[name="token"]').attr('value')
-             || $home('input[name="token"]').attr('value')
-             || '';
-
-  console.log(`[SEARCH] ${instanceUrl} — cookie: ${cookieHeader ? 'yes' : 'no'}, token: ${token ? token.substring(0,12)+'...' : 'MISSING'}`);
-
-  // Step 2: POST /search exactly like the browser form does
-  const params = new URLSearchParams({
-    q,
-    ...(token ? { token } : {}),
-    category_general: '1',
-    language: 'en-US',
-    time_range: '',
-    safesearch: '0',
-    theme: 'simple',
-  });
-
-  const resp = await axios.post(`${instanceUrl}/search`, params.toString(), {
-    timeout: 12000, httpsAgent, validateStatus: s => s === 200, maxRedirects: 5,
-    headers: {
-      'User-Agent': UA,
-      'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Referer': `${instanceUrl}/`,
-      ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
-    },
-  });
-
-  const html = resp.data.toString('utf-8');
-  const $ = cheerio.load(html);
-  const results = [];
-
-  $('article.result').each((_, el) => {
-    const titleEl = $(el).find('h3 a').first();
-    const title   = titleEl.text().trim();
-    const href    = titleEl.attr('href') || '';
-    if (!title || !href || !/^https?:/.test(href)) return;
-    const display = $(el).find('.url_wrapper .url, .url_wrapper, .result_url').first().text().trim();
-    const snippet = $(el).find('p.content, .content').first().text().trim();
-    results.push({ title, href, snippet, displayUrl: display || href });
-  });
-
-  if (!results.length) {
-    const endpoint = $('meta[name="endpoint"]').attr('content');
-    console.warn(`[SEARCH] 0 results from ${instanceUrl}. endpoint=${endpoint}. HTML snippet:`, html.substring(0, 300));
-  }
-
-  return results;
+async function fetchMarginalia(q) {
+  // Marginalia is a free search API — no key, no rate-limit headers needed.
+  // Returns: { results: [{url, title, description}] }
+  const resp = await axios.get(
+    `https://api.search.marginalia.nu/search/${encodeURIComponent(q)}`,
+    {
+      timeout: 10000, httpsAgent, validateStatus: s => s === 200,
+      headers: { 'Accept': 'application/json', 'User-Agent': UA },
+    }
+  );
+  const items = resp.data?.results || [];
+  return items.map(r => ({
+    title:      r.title || r.url,
+    href:       r.url,
+    snippet:    r.description || '',
+    displayUrl: r.url,
+  }));
 }
 
 // ─── Search endpoint ──────────────────────────────────────────────────────────
@@ -225,28 +187,30 @@ app.get('/search', async (req, res) => {
   const q = req.query.q;
   if (!q) return res.status(400).send('Missing ?q=');
   const host = req.get('host');
-
   const esc = s => String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
   let results = [];
-  let lastError = 'No instances available';
+  let source = '';
 
-  for (const instance of SEARXNG_INSTANCES) {
+  // Try Brave first (higher quality), fall back to Marginalia (always free)
+  if (process.env.BRAVE_SEARCH_KEY) {
     try {
-      results = await fetchSearxngHtml(q, instance);
-      if (results.length) {
-        console.log(`[SEARCH] ${results.length} results from ${instance}`);
-        break;
-      }
-      console.warn(`[SEARCH] ${instance} returned 0 results, trying next…`);
+      results = await fetchBrave(q);
+      source = 'Brave Search';
+      console.log(`[SEARCH] ${results.length} results from Brave`);
     } catch(e) {
-      lastError = `${instance}: ${e.message}`;
-      console.warn(`[SEARCH] Instance failed — ${lastError}`);
+      console.warn('[SEARCH] Brave failed:', e.message);
     }
   }
 
   if (!results.length) {
-    console.error('[SEARCH] All instances failed. Last error:', lastError);
+    try {
+      results = await fetchMarginalia(q);
+      source = 'Marginalia';
+      console.log(`[SEARCH] ${results.length} results from Marginalia`);
+    } catch(e) {
+      console.warn('[SEARCH] Marginalia failed:', e.message);
+    }
   }
 
   const html = `<!DOCTYPE html>
@@ -274,20 +238,20 @@ app.get('/search', async (req, res) => {
     .result-title a:hover{text-decoration:underline}
     .result-snippet{font-size:14px;color:rgba(240,240,245,0.65);line-height:1.6}
     .no-results{text-align:center;padding:60px 20px;color:rgba(255,255,255,0.35);font-size:15px}
-    .no-results small{display:block;margin-top:8px;font-size:12px;color:rgba(255,255,255,0.2)}
+    .no-results code{background:rgba(255,255,255,0.06);padding:2px 7px;border-radius:4px;font-size:13px;color:#6c8eff}
     .powered{text-align:center;font-size:11px;color:rgba(255,255,255,0.15);margin-top:40px}
   </style>
 </head>
 <body>
   <div class="topbar">
-    <span class="logo">⬡ CentOS Search</span>
+    <span class="logo">&#x2B21; CentOS Search</span>
     <form class="search-form" id="sf">
-      <input class="search-inp" id="qi" value="${esc(q)}" placeholder="Search the web…"/>
+      <input class="search-inp" id="qi" value="${esc(q)}" placeholder="Search the web&hellip;"/>
       <button class="search-btn" type="submit">Search</button>
     </form>
   </div>
   <div class="results">
-    <div class="result-count">${results.length} result${results.length !== 1 ? 's' : ''} for "<strong>${esc(q)}</strong>"</div>
+    <div class="result-count">${results.length} result${results.length !== 1 ? 's' : ''} for &ldquo;<strong>${esc(q)}</strong>&rdquo;</div>
     ${results.length
       ? results.map(r => `
       <div class="result">
@@ -295,11 +259,13 @@ app.get('/search', async (req, res) => {
         <div class="result-title"><a href="#" data-url="${esc(r.href)}">${esc(r.title)}</a></div>
         <div class="result-snippet">${esc(r.snippet)}</div>
       </div>`).join('')
-      : `<div class="no-results">No results found.
-          <small>If this keeps happening, set a custom SEARXNG_URL environment variable<br>pointing to your own SearXNG instance.</small>
+      : `<div class="no-results">
+          No results found.<br><br>
+          To enable full search, set the <code>BRAVE_SEARCH_KEY</code> environment variable.<br>
+          Get a free key at <a href="https://brave.com/search/api/" style="color:#6c8eff">brave.com/search/api</a>
         </div>`
     }
-    <div class="powered">Powered by SearXNG · Routed through CentOS Web Proxy</div>
+    <div class="powered">${source ? `Powered by ${esc(source)}` : 'CentOS Web Proxy'} &middot; Routed through CentOS Web</div>
   </div>
   <script>
     var HOST = '${host}';
@@ -308,9 +274,9 @@ app.get('/search', async (req, res) => {
     }
     document.getElementById('sf').addEventListener('submit', function(e) {
       e.preventDefault();
-      var q = document.getElementById('qi').value.trim();
-      if (!q) return;
-      navTo('https://' + HOST + '/search?q=' + encodeURIComponent(q));
+      var v = document.getElementById('qi').value.trim();
+      if (!v) return;
+      navTo('https://' + HOST + '/search?q=' + encodeURIComponent(v));
     });
     document.addEventListener('click', function(e) {
       var a = e.target.closest('a[data-url]');
@@ -329,7 +295,6 @@ app.get('/search', async (req, res) => {
   res.set('Content-Security-Policy', 'frame-ancestors *');
   res.send(html);
 });
-
 
 app.get('/proxy', async (req, res) => {
   const raw = req.query.url;
