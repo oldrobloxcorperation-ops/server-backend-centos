@@ -154,7 +154,11 @@ const SEARXNG_INSTANCES = [
 ].filter(Boolean);
 
 async function fetchSearxngHtml(q, instanceUrl) {
-  const url = `${instanceUrl}/search?q=${encodeURIComponent(q)}&language=en-US&safesearch=0`;
+  // Use the exact same params the SearXNG browser UI sends.
+  // category_general=1 and theme=simple are required -- without them many
+  // instances return 0 results or redirect to the homepage.
+  const url = `${instanceUrl}/search?q=${encodeURIComponent(q)}&category_general=1&language=en-US&time_range=&safesearch=0&theme=simple`;
+
   const resp = await axios.get(url, {
     timeout: 12000,
     httpsAgent,
@@ -164,28 +168,37 @@ async function fetchSearxngHtml(q, instanceUrl) {
       'User-Agent': UA,
       'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
       'Accept-Language': 'en-US,en;q=0.9',
+      // Referer makes it look like the request came from the SearXNG homepage
+      'Referer': `${instanceUrl}/`,
     },
   });
 
-  const $ = cheerio.load(resp.data.toString('utf-8'));
+  const html = resp.data.toString('utf-8');
+  const $ = cheerio.load(html);
   const results = [];
 
-  // SearXNG wraps each result in <article class="result ...">
+  // SearXNG simple theme HTML structure:
+  //   <article class="result">
+  //     <h3><a href="REAL_URL">Title</a></h3>
+  //     <a class="url_wrapper"><span class="url">display url</span></a>
+  //     <p class="content">Snippet</p>
+  //   </article>
   $('article.result').each((_, el) => {
-    // Title link — always inside an <h3>
-    const titleEl  = $(el).find('h3 a').first();
-    const title    = titleEl.text().trim();
-    // Real URL is on the title <a> href (not a redirect)
-    const href     = titleEl.attr('href') || '';
-    // Display URL shown to user
-    const display  = $(el).find('a.url_wrapper, .url_wrapper').text().trim()
-                  || $(el).find('.result_url, .result-url').text().trim();
-    // Snippet / content
-    const snippet  = $(el).find('p.content, .result-content, .content').first().text().trim();
+    const titleEl = $(el).find('h3 a').first();
+    const title   = titleEl.text().trim();
+    const href    = titleEl.attr('href') || '';
 
     if (!title || !href || !/^https?:/.test(href)) return;
+
+    const display = $(el).find('.url_wrapper .url, .url_wrapper, .result_url').first().text().trim();
+    const snippet = $(el).find('p.content, .content').first().text().trim();
+
     results.push({ title, href, snippet, displayUrl: display || href });
   });
+
+  if (!results.length) {
+    console.warn(`[SEARCH] 0 results from ${instanceUrl}. HTML snippet:`, html.substring(0, 600));
+  }
 
   return results;
 }
