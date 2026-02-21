@@ -128,105 +128,47 @@ function injectedJs(pageUrl, host) {
 <\/script>`;
 }
 
-// ─── Helper: extract real URL from a DDG redirect ────────────────────────────
-function unwrapDdgUrl(raw) {
-  if (!raw) return null;
-  if (/^https?:\/\//.test(raw)) return raw;
-  try {
-    const u = new URL(raw.startsWith('//') ? 'https:' + raw : raw);
-    const uddg = u.searchParams.get('uddg') || u.searchParams.get('u3');
-    if (uddg) return decodeURIComponent(uddg);
-  } catch { /* fall through */ }
-  return null;
-}
+// ─── Search via SearXNG JSON API ──────────────────────────────────────────────
+// SearXNG is open-source meta-search. Public instances expose a /search?format=json
+// endpoint that returns real results with no bot-detection, no scraping, no API key.
+// We try multiple public instances in order; first one that returns results wins.
+//
+// Instance list sourced from https://searx.space (only instances with API enabled).
+// Add SEARXNG_URL=https://your-own-instance.example.com to .env to use your own.
+// ─────────────────────────────────────────────────────────────────────────────
+const SEARXNG_INSTANCES = [
+  process.env.SEARXNG_URL,          // custom instance wins if set
+  'https://searx.be',
+  'https://search.inetol.net',
+  'https://searx.tiekoetter.com',
+  'https://opnxng.com',
+  'https://searx.ox2.fr',
+  'https://search.bus-hit.me',
+].filter(Boolean);
 
-// ─── Helper: fetch DDG Lite and parse results ─────────────────────────────────
-// DDG Lite (lite.duckduckgo.com/lite/) is a plain-HTML, table-based page.
-// Row layout per result:
-//   row 1: <td colspan="2"><a class="result-link" href="...">Title</a></td>
-//   row 2: <td class="result-snippet">Snippet text</td>
-//   row 3: <td><span class="link-text">display.url</span></td>
-async function fetchDdgLite(q) {
-  const body = `q=${encodeURIComponent(q)}&kl=us-en`;
-  const resp = await axios.post('https://lite.duckduckgo.com/lite/', body, {
-    timeout: 15000, httpsAgent, validateStatus: () => true, maxRedirects: 5,
+async function fetchSearxng(q, instanceUrl) {
+  const url = `${instanceUrl}/search?q=${encodeURIComponent(q)}&format=json&engines=google,bing,duckduckgo,brave&language=en-US`;
+  const resp = await axios.get(url, {
+    timeout: 10000,
+    httpsAgent,
+    validateStatus: s => s === 200,
     headers: {
       'User-Agent': UA,
-      'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Referer': 'https://duckduckgo.com/',
-      'Origin': 'https://duckduckgo.com',
+      'Accept': 'application/json',
     },
   });
-  const html = resp.data.toString('utf-8');
-  const $ = cheerio.load(html);
-  const results = [];
+  const data = resp.data;
+  if (!data || !Array.isArray(data.results)) throw new Error('No results array in response');
 
-  $('a.result-link').each((_, a) => {
-    const title   = $(a).text().trim();
-    const rawHref = $(a).attr('href') || '';
-    const href    = /^https?:/.test(rawHref) ? rawHref : unwrapDdgUrl(rawHref);
-    if (!title || !href) return;
-    const row     = $(a).closest('tr');
-    const snippet = row.nextAll('tr').find('td.result-snippet').first().text().trim();
-    const display = row.nextAll('tr').find('span.link-text').first().text().trim();
-    results.push({ title, href, snippet, displayUrl: display || href });
-  });
-
-  return { results, rawHtml: html };
+  return data.results
+    .filter(r => r.url && r.title)
+    .map(r => ({
+      title:      r.title,
+      href:       r.url,
+      snippet:    r.content || '',
+      displayUrl: r.pretty_url || r.url,
+    }));
 }
-
-// ─── Helper: fetch regular DDG HTML and parse results ────────────────────────
-async function fetchDdgHtml(q) {
-  const resp = await axios.get(
-    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}&kl=us-en`,
-    {
-      timeout: 15000, httpsAgent, validateStatus: () => true, maxRedirects: 5,
-      headers: {
-        'User-Agent': UA,
-        'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': 'https://duckduckgo.com/',
-      },
-    }
-  );
-  const html = resp.data.toString('utf-8');
-  const $ = cheerio.load(html);
-  const results = [];
-
-  $('div.result, div[class*="result"]').each((_, el) => {
-    const titleEl = $(el).find('a.result__a, h2 a, .result__title a').first();
-    const title   = titleEl.text().trim();
-    const rawHref = titleEl.attr('href') || '';
-    if (!title || !rawHref) return;
-    const href = /^https?:/.test(rawHref) ? rawHref : unwrapDdgUrl(rawHref);
-    if (!href) return;
-    const snippet = $(el).find('a.result__snippet, .result__snippet').text().trim();
-    const display = $(el).find('a.result__url, .result__url').text().trim();
-    results.push({ title, href, snippet, displayUrl: display || href });
-  });
-
-  return { results, rawHtml: html };
-}
-
-// ─── Debug endpoint — GET /search-debug?q=test ────────────────────────────────
-// Dumps raw DDG response + parsed results as JSON so you can inspect what's
-// coming back and tune selectors if DDG ever changes their markup.
-app.get('/search-debug', async (req, res) => {
-  const q = req.query.q || 'test';
-  try {
-    const [lite, main] = await Promise.allSettled([fetchDdgLite(q), fetchDdgHtml(q)]);
-    res.json({
-      lite: lite.status === 'fulfilled'
-        ? { resultCount: lite.value.results.length, firstThree: lite.value.results.slice(0,3), rawSnippet: lite.value.rawHtml.substring(0,3000) }
-        : { error: lite.reason?.message },
-      main: main.status === 'fulfilled'
-        ? { resultCount: main.value.results.length, firstThree: main.value.results.slice(0,3), rawSnippet: main.value.rawHtml.substring(0,3000) }
-        : { error: main.reason?.message },
-    });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
 
 // ─── Search endpoint ──────────────────────────────────────────────────────────
 app.get('/search', async (req, res) => {
@@ -234,34 +176,30 @@ app.get('/search', async (req, res) => {
   if (!q) return res.status(400).send('Missing ?q=');
   const host = req.get('host');
 
-  try {
-    // Try DDG Lite first; fall back to DDG HTML if it yields nothing
-    let results = [];
-    let rawHtml = '';
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
+  let results = [];
+  let lastError = 'No instances available';
+
+  // Try each SearXNG instance until one works
+  for (const instance of SEARXNG_INSTANCES) {
     try {
-      const lite = await fetchDdgLite(q);
-      results = lite.results;
-      rawHtml = lite.rawHtml;
-    } catch(e) { console.warn('[SEARCH] DDG Lite failed:', e.message); }
-
-    if (!results.length) {
-      console.warn('[SEARCH] DDG Lite returned 0 results — trying DDG HTML...');
-      try {
-        const main = await fetchDdgHtml(q);
-        results = main.results;
-        rawHtml = main.rawHtml;
-      } catch(e) { console.warn('[SEARCH] DDG HTML failed:', e.message); }
+      results = await fetchSearxng(q, instance);
+      if (results.length) {
+        console.log(`[SEARCH] ${results.length} results from ${instance}`);
+        break;
+      }
+    } catch(e) {
+      lastError = `${instance}: ${e.message}`;
+      console.warn(`[SEARCH] Instance failed — ${lastError}`);
     }
+  }
 
-    if (!results.length) {
-      console.warn('[SEARCH] Both sources returned 0 results. Raw HTML (first 1000 chars):\n', rawHtml.substring(0, 1000));
-    }
+  if (!results.length) {
+    console.error('[SEARCH] All instances failed. Last error:', lastError);
+  }
 
-    // Escape helper for inline HTML attributes
-    const esc = s => s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-    const html = `<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
@@ -271,7 +209,7 @@ app.get('/search', async (req, res) => {
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d0d1c;color:#f0f0f5;min-height:100vh;padding-bottom:40px}
     .topbar{background:rgba(10,10,25,0.97);border-bottom:1px solid rgba(255,255,255,0.08);padding:12px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:99}
-    .logo{color:#6c8eff;font-size:18px;font-weight:700;white-space:nowrap;text-decoration:none}
+    .logo{color:#6c8eff;font-size:18px;font-weight:700;white-space:nowrap}
     .search-form{display:flex;flex:1;gap:8px;max-width:600px}
     .search-inp{flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:22px;padding:8px 18px;color:#fff;font-size:14px;outline:none}
     .search-inp:focus{border-color:rgba(108,142,255,0.6);background:rgba(108,142,255,0.08)}
@@ -286,6 +224,7 @@ app.get('/search', async (req, res) => {
     .result-title a:hover{text-decoration:underline}
     .result-snippet{font-size:14px;color:rgba(240,240,245,0.65);line-height:1.6}
     .no-results{text-align:center;padding:60px 20px;color:rgba(255,255,255,0.35);font-size:15px}
+    .no-results small{display:block;margin-top:8px;font-size:12px;color:rgba(255,255,255,0.2)}
     .powered{text-align:center;font-size:11px;color:rgba(255,255,255,0.15);margin-top:40px}
   </style>
 </head>
@@ -293,7 +232,7 @@ app.get('/search', async (req, res) => {
   <div class="topbar">
     <span class="logo">⬡ CentOS Search</span>
     <form class="search-form" id="sf">
-      <input class="search-inp" id="q" value="${esc(q)}" placeholder="Search the web…"/>
+      <input class="search-inp" id="qi" value="${esc(q)}" placeholder="Search the web…"/>
       <button class="search-btn" type="submit">Search</button>
     </form>
   </div>
@@ -306,26 +245,23 @@ app.get('/search', async (req, res) => {
         <div class="result-title"><a href="#" data-url="${esc(r.href)}">${esc(r.title)}</a></div>
         <div class="result-snippet">${esc(r.snippet)}</div>
       </div>`).join('')
-      : `<div class="no-results">No results found. Try a different search.</div>`
+      : `<div class="no-results">No results found.
+          <small>If this keeps happening, set a custom SEARXNG_URL environment variable<br>pointing to your own SearXNG instance.</small>
+        </div>`
     }
-    <div class="powered">Powered by DuckDuckGo · Routed through CentOS Web Proxy</div>
+    <div class="powered">Powered by SearXNG · Routed through CentOS Web Proxy</div>
   </div>
   <script>
     var HOST = '${host}';
-
     function navTo(url) {
       try { window.parent.postMessage({ type: 'centos-nav', url: url }, '*'); } catch(e) {}
     }
-
-    // Search form submit
     document.getElementById('sf').addEventListener('submit', function(e) {
       e.preventDefault();
-      var q = document.getElementById('q').value.trim();
+      var q = document.getElementById('qi').value.trim();
       if (!q) return;
       navTo('https://' + HOST + '/search?q=' + encodeURIComponent(q));
     });
-
-    // Result link clicks — use event delegation so no inline handlers needed
     document.addEventListener('click', function(e) {
       var a = e.target.closest('a[data-url]');
       if (!a) return;
@@ -337,15 +273,11 @@ app.get('/search', async (req, res) => {
 </body>
 </html>`;
 
-    res.set('Content-Type', 'text/html; charset=utf-8');
-    res.set('Access-Control-Allow-Origin', '*');
-    res.removeHeader('X-Frame-Options');
-    res.set('Content-Security-Policy', 'frame-ancestors *');
-    res.send(html);
-  } catch (err) {
-    console.error('[SEARCH]', err.message);
-    res.status(500).send(`Search error: ${err.message}`);
-  }
+  res.set('Content-Type', 'text/html; charset=utf-8');
+  res.set('Access-Control-Allow-Origin', '*');
+  res.removeHeader('X-Frame-Options');
+  res.set('Content-Security-Policy', 'frame-ancestors *');
+  res.send(html);
 });
 
 
