@@ -60,13 +60,38 @@ function injectedJs(pageUrl, host) {
   return `<script>
 (function(){
   var P='https://${host}/proxy?url=', B='${pageUrl}';
+
+  function navTo(url){
+    try{ window.parent.postMessage({type:'centos-nav',url:url},'*'); }catch{}
+  }
+
+  // Intercept fetch
   var _f=window.fetch;
   window.fetch=function(r,o){ if(typeof r==='string'&&/^https?:/.test(r)) r=P+encodeURIComponent(r); return _f(r,o); };
+
+  // Intercept XHR
   var _x=XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open=function(m,u){ if(/^https?:/.test(u)) u=P+encodeURIComponent(u); return _x.apply(this,arguments); };
-  function navTo(url){
-    try{ window.parent.postMessage({type:'centos-nav',url:url},'*'); }catch{ window.location.href=P+encodeURIComponent(url); }
-  }
+
+  // Intercept history.pushState / replaceState (Google, SPAs)
+  var _push=history.pushState, _repl=history.replaceState;
+  history.pushState=function(s,t,u){ if(u){ try{ navTo(new URL(String(u),B).href); }catch{} return; } return _push.apply(this,arguments); };
+  history.replaceState=function(s,t,u){ if(u){ try{ navTo(new URL(String(u),B).href); }catch{} return; } return _repl.apply(this,arguments); };
+
+  // Intercept window.location.href setter, assign, replace
+  try{
+    var _ld=Object.getOwnPropertyDescriptor(Location.prototype,'href');
+    Object.defineProperty(Location.prototype,'href',{
+      get:_ld.get,
+      set:function(u){ if(/^https?:/.test(u)){ try{ navTo(new URL(u,B).href); }catch{} return; } _ld.set.call(this,u); }
+    });
+    var _la=Location.prototype.assign;
+    Location.prototype.assign=function(u){ if(/^https?:/.test(u)){ try{ navTo(new URL(u,B).href); }catch{} return; } _la.call(this,u); };
+    var _lr=Location.prototype.replace;
+    Location.prototype.replace=function(u){ if(/^https?:/.test(u)){ try{ navTo(new URL(u,B).href); }catch{} return; } _lr.call(this,u); };
+  }catch(e){}
+
+  // Intercept link clicks
   document.addEventListener('click',function(e){
     var a=e.target.closest('a'); if(!a) return;
     var h=a.getAttribute('href');
@@ -74,6 +99,8 @@ function injectedJs(pageUrl, host) {
     e.preventDefault();
     try{ navTo(new URL(h,B).href); }catch{}
   },true);
+
+  // Intercept form submits
   document.addEventListener('submit',function(e){
     var f=e.target, m=(f.method||'GET').toUpperCase();
     if(m!=='GET') return;
