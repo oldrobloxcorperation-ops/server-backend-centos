@@ -64,19 +64,22 @@ function injectedJs(pageUrl, host) {
   window.fetch=function(r,o){ if(typeof r==='string'&&/^https?:/.test(r)) r=P+encodeURIComponent(r); return _f(r,o); };
   var _x=XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open=function(m,u){ if(/^https?:/.test(u)) u=P+encodeURIComponent(u); return _x.apply(this,arguments); };
+  function navTo(url){
+    try{ window.parent.postMessage({type:'centos-nav',url:url},'*'); }catch{ window.location.href=P+encodeURIComponent(url); }
+  }
   document.addEventListener('click',function(e){
     var a=e.target.closest('a'); if(!a) return;
     var h=a.getAttribute('href');
     if(!h||/^(#|javascript:|mailto:|tel:)/.test(h)) return;
     e.preventDefault();
-    try{ window.location.href=P+encodeURIComponent(new URL(h,B).href); }catch{}
+    try{ navTo(new URL(h,B).href); }catch{}
   },true);
   document.addEventListener('submit',function(e){
     var f=e.target, m=(f.method||'GET').toUpperCase();
     if(m!=='GET') return;
     e.preventDefault();
     var abs; try{ abs=new URL(f.action||B,B).href; }catch{ abs=f.action||B; }
-    window.location.href=P+encodeURIComponent(abs+'?'+new URLSearchParams(new FormData(f)));
+    navTo(abs+'?'+new URLSearchParams(new FormData(f)));
   },true);
 })();
 <\/script>`;
@@ -99,10 +102,27 @@ app.get('/proxy', async (req, res) => {
       headers: { 'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'Referer': target.origin },
     });
     const ct = upstream.headers['content-type'] || '';
+
+    // Strip ALL headers that could cause framing/CORS issues
+    const BLOCKED_HEADERS = [
+      'x-frame-options',
+      'content-security-policy',
+      'content-security-policy-report-only',
+      'cross-origin-embedder-policy',
+      'cross-origin-opener-policy',
+      'cross-origin-resource-policy',
+      'permissions-policy',
+      'x-content-type-options',
+      'strict-transport-security',
+    ];
+    BLOCKED_HEADERS.forEach(h => res.removeHeader(h));
+
     res.set('Access-Control-Allow-Origin', '*');
-    res.removeHeader('X-Frame-Options');
-    res.removeHeader('Content-Security-Policy');
-    res.set('Content-Security-Policy', "frame-ancestors *");
+    res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.set('Access-Control-Allow-Headers', '*');
+    res.set('Content-Security-Policy', 'frame-ancestors *');
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.set('Cross-Origin-Embedder-Policy', 'unsafe-none');
 
     if (/^(image|video|audio|font)\/|pdf|octet-stream/.test(ct)) {
       res.set('Content-Type', ct);
@@ -122,7 +142,11 @@ app.get('/proxy', async (req, res) => {
     if (ct.includes('html') || ct.includes('xhtml')) {
       const $ = cheerio.load(body, { decodeEntities: false });
       $('meta[http-equiv="Content-Security-Policy"]').remove();
+      $('meta[http-equiv="content-security-policy"]').remove();
       $('meta[http-equiv="X-Frame-Options"]').remove();
+      $('meta[http-equiv="x-frame-options"]').remove();
+      $('meta[http-equiv="Cross-Origin-Embedder-Policy"]').remove();
+      $('meta[http-equiv="Cross-Origin-Opener-Policy"]').remove();
       $('base').remove();
       $('head').prepend(`<base href="${raw}">`);
 
