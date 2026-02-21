@@ -140,28 +140,33 @@ function injectedJs(pageUrl, host) {
 //     https://api.search.marginalia.nu/search/<query>
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchBrave(q) {
-  const key = process.env.BRAVE_SEARCH_KEY;
-  if (!key) throw new Error('BRAVE_SEARCH_KEY not set');
-  const resp = await axios.get(
-    `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=20`,
-    {
-      timeout: 10000, httpsAgent, validateStatus: s => s === 200,
-      headers: {
-        'Accept': 'application/json',
-        'Accept-Encoding': 'gzip',
-        'X-Subscription-Token': key,
-      },
-    }
-  );
-  const items = resp.data?.web?.results || [];
+async function fetchGoogle(q) {
+  // Google Custom Search API — 100 queries/day free, no credit card needed.
+  // Setup (2 min):
+  //   1. Go to https://programmablesearchengine.google.com → New Search Engine
+  //      → set "Search the entire web" → copy the CX id
+  //   2. Go to https://developers.google.com/custom-search/v1/introduction
+  //      → Get a Key → copy the API key
+  //   3. Set GOOGLE_CSE_KEY and GOOGLE_CSE_CX in your environment variables.
+  const key = process.env.GOOGLE_CSE_KEY;
+  const cx  = process.env.GOOGLE_CSE_CX;
+  if (!key || !cx) throw new Error('GOOGLE_CSE_KEY or GOOGLE_CSE_CX not set');
+
+  const resp = await axios.get('https://www.googleapis.com/customsearch/v1', {
+    timeout: 10000, httpsAgent, validateStatus: s => s === 200,
+    params: { key, cx, q, num: 10 },
+    headers: { 'Accept': 'application/json' },
+  });
+
+  const items = resp.data?.items || [];
   return items.map(r => ({
     title:      r.title,
-    href:       r.url,
-    snippet:    r.description || '',
-    displayUrl: r.meta_url?.hostname || r.url,
+    href:       r.link,
+    snippet:    r.snippet || '',
+    displayUrl: r.displayLink || r.link,
   }));
 }
+
 
 async function fetchMarginalia(q) {
   // Marginalia is a free search API — no key, no rate-limit headers needed.
@@ -192,14 +197,14 @@ app.get('/search', async (req, res) => {
   let results = [];
   let source = '';
 
-  // Try Brave first (higher quality), fall back to Marginalia (always free)
-  if (process.env.BRAVE_SEARCH_KEY) {
+  // Try Google CSE first (100/day free), fall back to Marginalia (always free, smaller index)
+  if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) {
     try {
-      results = await fetchBrave(q);
-      source = 'Brave Search';
-      console.log(`[SEARCH] ${results.length} results from Brave`);
+      results = await fetchGoogle(q);
+      source = 'Google';
+      console.log(`[SEARCH] ${results.length} results from Google CSE`);
     } catch(e) {
-      console.warn('[SEARCH] Brave failed:', e.message);
+      console.warn('[SEARCH] Google CSE failed:', e.message);
     }
   }
 
@@ -261,8 +266,8 @@ app.get('/search', async (req, res) => {
       </div>`).join('')
       : `<div class="no-results">
           No results found.<br><br>
-          To enable full search, set the <code>BRAVE_SEARCH_KEY</code> environment variable.<br>
-          Get a free key at <a href="https://brave.com/search/api/" style="color:#6c8eff">brave.com/search/api</a>
+          To enable full web search, set <code>GOOGLE_CSE_KEY</code> and <code>GOOGLE_CSE_CX</code>.<br>
+          Free setup (2 min): <a href="https://programmablesearchengine.google.com" style="color:#6c8eff">programmablesearchengine.google.com</a>
         </div>`
     }
     <div class="powered">${source ? `Powered by ${esc(source)}` : 'CentOS Web Proxy'} &middot; Routed through CentOS Web</div>
