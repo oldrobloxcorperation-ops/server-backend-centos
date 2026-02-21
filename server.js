@@ -1,12 +1,9 @@
 /**
  * CentOS Web — Proxy Backend  (server.js)
  * ─────────────────────────────────────────
- * Fetches pages server-side and rewrites all links / assets so
- * they load back through this proxy, bypassing X-Frame-Options
- * and Content-Security-Policy restrictions.
- *
- * Start:  node server.js
- * Port:   3000  (set PORT env var to override)
+ * Vercel-compatible: exports `app` as the default export.
+ * For local dev, the bottom of the file calls app.listen()
+ * only when run directly (not imported by Vercel).
  */
 
 const express  = require('express');
@@ -37,7 +34,7 @@ function resolveUrl(base, rel) {
 }
 function makeProxyUrl(targetUrl, host) {
   if (!targetUrl || /^(javascript:|data:|#)/.test(targetUrl)) return targetUrl;
-  return `http://${host}/proxy?url=${encodeURIComponent(targetUrl)}`;
+  return `https://${host}/proxy?url=${encodeURIComponent(targetUrl)}`;
 }
 function rewriteCss(css, base, host) {
   return css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (_, q, u) => {
@@ -49,7 +46,7 @@ function rewriteCss(css, base, host) {
 function injectedJs(pageUrl, host) {
   return `<script>
 (function(){
-  var P='http://${host}/proxy?url=', B='${pageUrl}';
+  var P='https://${host}/proxy?url=', B='${pageUrl}';
   var _f=window.fetch;
   window.fetch=function(r,o){ if(typeof r==='string'&&/^https?:/.test(r)) r=P+encodeURIComponent(r); return _f(r,o); };
   var _x=XMLHttpRequest.prototype.open;
@@ -141,7 +138,7 @@ app.get('/proxy', async (req, res) => {
           <span style="color:#6c8eff">⬡ PROXY</span>
           <span style="background:rgba(76,232,160,0.12);color:#4ce8a0;padding:1px 7px;border-radius:8px;border:1px solid rgba(76,232,160,0.25);font-size:10px">SECURE</span>
           <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgba(255,255,255,0.35);font-weight:400">${raw}</span>
-          <a href="http://${host}/proxy?url=${encodeURIComponent(raw)}" style="color:rgba(108,142,255,0.6);text-decoration:none" title="Reload">↻</a>
+          <a href="https://${host}/proxy?url=${encodeURIComponent(raw)}" style="color:rgba(108,142,255,0.6);text-decoration:none" title="Reload">↻</a>
           <a href="${raw}" target="_blank" style="color:rgba(255,255,255,0.25);text-decoration:none" title="Open original">↗</a>
         </div>
         <div style="height:28px"></div>
@@ -171,10 +168,16 @@ app.post('/proxy', async (req, res) => {
   } catch (e) { res.status(500).send(e.message); }
 });
 
-app.listen(PORT, () => {
-  console.log(`\n  ⬡  CentOS Web Proxy`);
-  console.log(`  ────────────────────────────────`);
-  console.log(`  ✓  Running  ->  http://localhost:${PORT}`);
-  console.log(`  ✓  Health   ->  http://localhost:${PORT}/health`);
-  console.log(`  ✓  Example  ->  http://localhost:${PORT}/proxy?url=https://example.com\n`);
-});
+// Export for Vercel (serverless)
+module.exports = app;
+
+// Local dev only — Vercel never reaches this
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`\n  ⬡  CentOS Web Proxy`);
+    console.log(`  ────────────────────────────────`);
+    console.log(`  ✓  Running  ->  http://localhost:${PORT}`);
+    console.log(`  ✓  Health   ->  http://localhost:${PORT}/health`);
+    console.log(`  ✓  Example  ->  http://localhost:${PORT}/proxy?url=https://example.com\n`);
+  });
+}
