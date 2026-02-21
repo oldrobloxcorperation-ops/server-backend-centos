@@ -10,6 +10,9 @@ const express  = require('express');
 const axios    = require('axios');
 const cors     = require('cors');
 const cheerio  = require('cheerio');
+const https    = require('https');
+
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -92,6 +95,7 @@ app.get('/proxy', async (req, res) => {
   try {
     const upstream = await axios.get(raw, {
       responseType: 'arraybuffer', timeout: 20000, maxRedirects: 8, validateStatus: () => true,
+      httpsAgent,
       headers: { 'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9', 'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate, br', 'Referer': target.origin },
     });
     const ct = upstream.headers['content-type'] || '';
@@ -171,7 +175,7 @@ app.post('/proxy', async (req, res) => {
   const raw = req.query.url;
   if (!raw) return res.status(400).send('Missing ?url=');
   try {
-    const r = await axios.post(raw, req.body, { timeout: 15000, validateStatus: () => true, headers: { 'User-Agent': UA, 'Content-Type': req.get('content-type') || 'application/x-www-form-urlencoded' } });
+    const r = await axios.post(raw, req.body, { timeout: 15000, validateStatus: () => true, httpsAgent, headers: { 'User-Agent': UA, 'Content-Type': req.get('content-type') || 'application/x-www-form-urlencoded' } });
     res.set('Content-Type', r.headers['content-type'] || 'text/html');
     res.set('Access-Control-Allow-Origin', '*');
     res.send(r.data);
