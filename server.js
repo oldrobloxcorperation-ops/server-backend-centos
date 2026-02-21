@@ -24,13 +24,90 @@ app.use(express.urlencoded({ extended: true }));
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 // Root route
-app.get('/', (_req, res) => {
-  res.send(`<!DOCTYPE html><html><head><title>CentOS Web Proxy</title></head><body style="font-family:system-ui;background:#08080f;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px">
-    <span style="font-size:2rem">⬡</span>
-    <h2 style="margin:0;color:#6c8eff">CentOS Web Proxy</h2>
-    <span style="color:#4ce8a0;background:rgba(76,232,160,0.1);padding:4px 14px;border-radius:8px;border:1px solid rgba(76,232,160,0.25)">Online</span>
-    <p style="color:rgba(255,255,255,0.35);font-size:13px">Use <code style="color:#6c8eff">/proxy?url=https://example.com</code> to browse</p>
-  </body></html>`);
+app.get('/', (req, res) => {
+  const host = req.get('host');
+  res.set('Content-Type', 'text/html; charset=utf-8');
+  res.set('Content-Security-Policy', 'frame-ancestors *');
+  res.removeHeader('X-Frame-Options');
+  res.send('<!DOCTYPE html><html><head>'
+    + '<meta charset="UTF-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>CentOS Search</title>'
+    + '<style>'
+    + '*{margin:0;padding:0;box-sizing:border-box}'
+    + 'html,body{height:100%}'
+    + 'body{font-family:"Segoe UI",system-ui,sans-serif;background:#0a0a18;color:#f0f0f5;display:flex;flex-direction:column;}'
+    + '.page{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;gap:32px}'
+    + '.brand{display:flex;flex-direction:column;align-items:center;gap:10px}'
+    + '.brand-icon{font-size:3.5rem;line-height:1}'
+    + '.brand-name{font-size:2.4rem;font-weight:800;letter-spacing:-0.5px;'
+    + '  background:linear-gradient(135deg,#6c8eff 0%,#a78bfa 50%,#4ce8a0 100%);'
+    + '  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}'
+    + '.brand-tag{font-size:13px;color:rgba(255,255,255,0.35);letter-spacing:0.05em}'
+    + '.search-box{width:100%;max-width:580px;display:flex;flex-direction:column;gap:12px}'
+    + '.search-row{display:flex;gap:0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:32px;overflow:hidden;transition:border-color 0.2s,box-shadow 0.2s}'
+    + '.search-row:focus-within{border-color:rgba(108,142,255,0.6);box-shadow:0 0 0 3px rgba(108,142,255,0.12)}'
+    + '.search-inp{flex:1;background:transparent;border:none;padding:14px 22px;color:#fff;font-size:16px;outline:none}'
+    + '.search-inp::placeholder{color:rgba(255,255,255,0.3)}'
+    + '.search-btn{background:linear-gradient(135deg,#6c8eff,#a78bfa);border:none;padding:12px 24px;color:#fff;font-size:14px;font-weight:600;cursor:pointer;border-radius:0 32px 32px 0;white-space:nowrap;transition:opacity 0.2s}'
+    + '.search-btn:hover{opacity:0.85}'
+    + '.quick-links{display:flex;flex-wrap:wrap;justify-content:center;gap:8px}'
+    + '.ql{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.09);border-radius:20px;padding:6px 14px;font-size:12px;color:rgba(255,255,255,0.45);cursor:pointer;transition:all 0.2s;text-decoration:none}'
+    + '.ql:hover{background:rgba(108,142,255,0.15);border-color:rgba(108,142,255,0.4);color:#6c8eff}'
+    + '.footer{padding:16px;text-align:center;font-size:11px;color:rgba(255,255,255,0.15)}'
+    + '.status{display:inline-flex;align-items:center;gap:5px}'
+    + '.dot{width:6px;height:6px;border-radius:50%;background:#4ce8a0;box-shadow:0 0 6px #4ce8a0}'
+    + '</style>'
+    + '</head><body>'
+    + '<div class="page">'
+    + '  <div class="brand">'
+    + '    <span class="brand-icon">&#x2B21;</span>'
+    + '    <span class="brand-name">CentOS Search</span>'
+    + '    <span class="brand-tag">Private &bull; Fast &bull; Proxied</span>'
+    + '  </div>'
+    + '  <div class="search-box">'
+    + '    <form class="search-row" id="sf">'
+    + '      <input class="search-inp" id="qi" placeholder="Search the web or enter a URL..." autofocus autocomplete="off" spellcheck="false"/>'
+    + '      <button class="search-btn" type="submit">Search</button>'
+    + '    </form>'
+    + '    <div class="quick-links">'
+    + '      <a class="ql" data-url="https://youtube.com">YouTube</a>'
+    + '      <a class="ql" data-url="https://reddit.com">Reddit</a>'
+    + '      <a class="ql" data-url="https://github.com">GitHub</a>'
+    + '      <a class="ql" data-url="https://twitter.com">Twitter / X</a>'
+    + '      <a class="ql" data-url="https://wikipedia.org">Wikipedia</a>'
+    + '      <a class="ql" data-url="https://twitch.tv">Twitch</a>'
+    + '      <a class="ql" data-url="https://instagram.com">Instagram</a>'
+    + '      <a class="ql" data-url="https://discord.com">Discord</a>'
+    + '    </div>'
+    + '  </div>'
+    + '</div>'
+    + '<div class="footer"><span class="status"><span class="dot"></span> Online</span> &mdash; CentOS Web Proxy</div>'
+    + '<script>'
+    + 'var HOST="' + host + '";'
+    + 'function navTo(u){try{window.parent.postMessage({type:"centos-nav",url:u},"*")}catch(e){}setTimeout(function(){if(window.parent===window)window.location.href=u;},80);}'
+    // Search form: if it looks like a URL go straight to proxy, otherwise search
+    + 'document.getElementById("sf").addEventListener("submit",function(e){'
+    + '  e.preventDefault();'
+    + '  var v=document.getElementById("qi").value.trim();'
+    + '  if(!v)return;'
+    + '  if(/^https?:\\/\\//.test(v)||(/^[\\w-]+\\.\\w{2,}/.test(v)&&!v.includes(" "))){' // URL detection
+    + '    var url=(/^https?:\\/\\//.test(v)?v:"https://"+v);'
+    + '    navTo("https://"+HOST+"/proxy?url="+encodeURIComponent(url));'
+    + '  } else {'
+    + '    navTo("https://"+HOST+"/search?q="+encodeURIComponent(v)+"&page=1");'
+    + '  }'
+    + '});'
+    // Quick link clicks
+    + 'document.addEventListener("click",function(e){'
+    + '  var a=e.target.closest("a[data-url]");'
+    + '  if(!a)return;'
+    + '  e.preventDefault();'
+    + '  navTo("https://"+HOST+"/proxy?url="+encodeURIComponent(a.getAttribute("data-url")));'
+    + '});'
+    + '<\/script>'
+    + '</body></html>'
+  );
 });
 
 // Health check — frontend polls this for the green badge
