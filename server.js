@@ -20,6 +20,16 @@ app.use(express.urlencoded({ extended: true }));
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
+// Root route
+app.get('/', (_req, res) => {
+  res.send(`<!DOCTYPE html><html><head><title>CentOS Web Proxy</title></head><body style="font-family:system-ui;background:#08080f;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px">
+    <span style="font-size:2rem">⬡</span>
+    <h2 style="margin:0;color:#6c8eff">CentOS Web Proxy</h2>
+    <span style="color:#4ce8a0;background:rgba(76,232,160,0.1);padding:4px 14px;border-radius:8px;border:1px solid rgba(76,232,160,0.25)">Online</span>
+    <p style="color:rgba(255,255,255,0.35);font-size:13px">Use <code style="color:#6c8eff">/proxy?url=https://example.com</code> to browse</p>
+  </body></html>`);
+});
+
 // Health check — frontend polls this for the green badge
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', server: 'CentOS Web Proxy', port: PORT });
