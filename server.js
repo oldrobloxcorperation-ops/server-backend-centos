@@ -154,50 +154,56 @@ const SEARXNG_INSTANCES = [
 ].filter(Boolean);
 
 async function fetchSearxngHtml(q, instanceUrl) {
-  // Use the exact same params the SearXNG browser UI sends.
-  // category_general=1 and theme=simple are required -- without them many
-  // instances return 0 results or redirect to the homepage.
+  // SearXNG requires a session cookie set by visiting the homepage first.
+  // Without it, the server returns the index page instead of search results.
+  // Step 1: GET homepage to collect the session cookie (client_id + client_secret etc.)
+  let cookieHeader = '';
+  try {
+    const homeResp = await axios.get(instanceUrl + '/', {
+      timeout: 8000, httpsAgent, validateStatus: () => true, maxRedirects: 3,
+      headers: { 'User-Agent': UA, 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' },
+    });
+    const setCookies = homeResp.headers['set-cookie'];
+    if (Array.isArray(setCookies)) {
+      cookieHeader = setCookies.map(c => c.split(';')[0]).join('; ');
+    }
+  } catch(e) {
+    console.warn(`[SEARCH] Cookie prefetch failed for ${instanceUrl}:`, e.message);
+  }
+
+  // Step 2: GET the search with the session cookie + exact browser params
   const url = `${instanceUrl}/search?q=${encodeURIComponent(q)}&category_general=1&language=en-US&time_range=&safesearch=0&theme=simple`;
 
+  const headers = {
+    'User-Agent': UA,
+    'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': `${instanceUrl}/`,
+  };
+  if (cookieHeader) headers['Cookie'] = cookieHeader;
+
   const resp = await axios.get(url, {
-    timeout: 12000,
-    httpsAgent,
-    validateStatus: s => s === 200,
-    maxRedirects: 5,
-    headers: {
-      'User-Agent': UA,
-      'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
-      'Accept-Language': 'en-US,en;q=0.9',
-      // Referer makes it look like the request came from the SearXNG homepage
-      'Referer': `${instanceUrl}/`,
-    },
+    timeout: 12000, httpsAgent, validateStatus: s => s === 200, maxRedirects: 5, headers,
   });
 
   const html = resp.data.toString('utf-8');
   const $ = cheerio.load(html);
   const results = [];
 
-  // SearXNG simple theme HTML structure:
-  //   <article class="result">
-  //     <h3><a href="REAL_URL">Title</a></h3>
-  //     <a class="url_wrapper"><span class="url">display url</span></a>
-  //     <p class="content">Snippet</p>
-  //   </article>
   $('article.result').each((_, el) => {
     const titleEl = $(el).find('h3 a').first();
     const title   = titleEl.text().trim();
     const href    = titleEl.attr('href') || '';
-
     if (!title || !href || !/^https?:/.test(href)) return;
-
     const display = $(el).find('.url_wrapper .url, .url_wrapper, .result_url').first().text().trim();
     const snippet = $(el).find('p.content, .content').first().text().trim();
-
     results.push({ title, href, snippet, displayUrl: display || href });
   });
 
   if (!results.length) {
-    console.warn(`[SEARCH] 0 results from ${instanceUrl}. HTML snippet:`, html.substring(0, 600));
+    // Check if we're still getting the index page
+    const endpoint = $('meta[name="endpoint"]').attr('content');
+    console.warn(`[SEARCH] 0 results from ${instanceUrl}. endpoint=${endpoint}. HTML snippet:`, html.substring(0, 300));
   }
 
   return results;
