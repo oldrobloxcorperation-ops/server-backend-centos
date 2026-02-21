@@ -100,8 +100,9 @@ app.get('/proxy', async (req, res) => {
     });
     const ct = upstream.headers['content-type'] || '';
     res.set('Access-Control-Allow-Origin', '*');
-    res.set('X-Frame-Options', 'ALLOWALL');
+    res.removeHeader('X-Frame-Options');
     res.removeHeader('Content-Security-Policy');
+    res.set('Content-Security-Policy', "frame-ancestors *");
 
     if (/^(image|video|audio|font)\/|pdf|octet-stream/.test(ct)) {
       res.set('Content-Type', ct);
