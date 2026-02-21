@@ -745,7 +745,7 @@ document.addEventListener('click',function(e){
 
 // Health check
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', server: 'CentOS Web Proxy', youtube: !!ytdl, twitch: true, port: PORT });
+  res.json({ status: 'ok', server: 'CentOS Web Proxy', twitch: true, port: PORT });
 });
 
 // ─── Search ───────────────────────────────────────────────────────────────────
