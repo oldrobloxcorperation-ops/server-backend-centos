@@ -3,14 +3,11 @@
  * ─────────────────────────────────────────
  * Enhanced with:
  *   • Full audio/video proxying with range-request seeking
- *   • YouTube: custom player via @distube/ytdl-core (no API key needed)
+ *   • YouTube: Invidious API (no bot detection, no API key, works on Vercel)
  *   • Twitch: live stream + VOD via GQL API + HLS.js player
  *   • Complete navigation containment (no leaks)
  *
- * Extra package needed — add to package.json dependencies:
- *   "@distube/ytdl-core": "^4.14.4"
- *   then run: npm install
- *
+ * No special packages needed beyond express/axios/cors/cheerio.
  * Vercel-compatible: exports `app` as the default export.
  */
 
@@ -19,11 +16,6 @@ const axios    = require('axios');
 const cors     = require('cors');
 const cheerio  = require('cheerio');
 const https    = require('https');
-
-// ytdl-core is optional — graceful degradation if not installed
-let ytdl;
-try { ytdl = require('@distube/ytdl-core'); }
-catch(e) { console.warn('[WARN] @distube/ytdl-core not installed. YouTube disabled. Run: npm install @distube/ytdl-core'); }
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 const app  = express();
@@ -278,24 +270,58 @@ function injectedJs(pageUrl, host) {
 <\/script>`;
 }
 
-// ─── YouTube Player ───────────────────────────────────────────────────────────
-function youtubePlayerPage(host, videoId, info) {
-  const title  = esc(info.videoDetails.title || 'YouTube Video');
-  const author = esc(info.videoDetails.author.name || '');
-  const formats = info.formats;
+// ─── YouTube via Invidious API ────────────────────────────────────────────────
+// Invidious is an open-source YouTube frontend. Its public instances expose a
+// JSON API that returns direct stream URLs — no bot detection, no API key,
+// works fine from Vercel datacenter IPs. We try multiple instances and fall
+// back automatically if one is down.
+const INVIDIOUS_INSTANCES = [
+  'https://inv.nadeko.net',
+  'https://invidious.privacyredirect.com',
+  'https://yt.cdaut.de',
+  'https://invidious.nerdvpn.de',
+  'https://iv.datura.network',
+  'https://invidious.perennialte.ch',
+];
 
-  // Progressive (audio+video combined) — easiest to play
-  const progressive = formats
-    .filter(f => f.hasVideo && f.hasAudio)
-    .sort((a, b) => (b.height||0) - (a.height||0));
+async function getYouTubeInfo(videoId) {
+  let lastErr;
+  for (const instance of INVIDIOUS_INSTANCES) {
+    try {
+      const resp = await axios.get(`${instance}/api/v1/videos/${videoId}`, {
+        timeout: 8000, httpsAgent, validateStatus: () => true,
+        headers: { 'User-Agent': UA, 'Accept': 'application/json' },
+      });
+      if (resp.status === 200 && resp.data && (resp.data.adaptiveFormats || resp.data.formatStreams)) {
+        return { data: resp.data, instance };
+      }
+      lastErr = new Error(`${instance} returned HTTP ${resp.status}`);
+    } catch(e) {
+      lastErr = e;
+      console.warn(`[YT] Invidious instance ${instance} failed: ${e.message}`);
+    }
+  }
+  throw lastErr || new Error('All Invidious instances failed');
+}
 
-  const qualityOptions = progressive.map(f => ({
-    label: f.qualityLabel || f.quality || (f.height ? f.height+'p' : '?'),
-    url: `https://${host}/yt-stream?url=${encodeURIComponent(f.url)}`
+function youtubePlayerPage(host, videoId, invData) {
+  const title  = esc(invData.title  || 'YouTube Video');
+  const author = esc(invData.author || '');
+
+  // formatStreams = combined audio+video (up to 720p), easy to play directly
+  // adaptiveFormats = separate video-only and audio-only streams (higher quality)
+  const combined = (invData.formatStreams || [])
+    .filter(f => f.url && f.resolution)
+    .sort((a, b) => (parseInt(b.resolution)||0) - (parseInt(a.resolution)||0));
+
+  const qualityOptions = combined.map(f => ({
+    label: f.qualityLabel || f.resolution || f.quality || '?',
+    url:   `https://${host}/yt-stream?url=${encodeURIComponent(f.url)}`,
+    type:  f.type || 'video/mp4',
   }));
 
-  const defaultUrl = qualityOptions[0]?.url || '';
-  const qualJson   = JSON.stringify(qualityOptions);
+  const defaultUrl  = qualityOptions[0]?.url  || '';
+  const defaultType = qualityOptions[0]?.type || 'video/mp4';
 
   return `<!DOCTYPE html>
 <html>
@@ -306,7 +332,7 @@ function youtubePlayerPage(host, videoId, info) {
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{background:#0a0a12;color:#f0f0f5;font-family:"Segoe UI",system-ui,sans-serif;min-height:100vh}
-    .topbar{background:rgba(8,8,18,0.96);border-bottom:1px solid rgba(108,142,255,0.2);padding:8px 16px;display:flex;align-items:center;gap:10px;font:600 11px/1 system-ui;letter-spacing:.05em}
+    .topbar{background:rgba(8,8,18,.96);border-bottom:1px solid rgba(108,142,255,.2);padding:8px 16px;display:flex;align-items:center;gap:10px;font:600 11px/1 system-ui;letter-spacing:.05em}
     .wrap{max-width:900px;margin:0 auto;padding:20px 16px}
     .player-box{width:100%;background:#000;border-radius:10px;overflow:hidden;aspect-ratio:16/9;box-shadow:0 4px 32px rgba(0,0,0,.6)}
     video{width:100%;height:100%;display:block;outline:none}
@@ -319,6 +345,7 @@ function youtubePlayerPage(host, videoId, info) {
     .q-btn.active{background:rgba(108,142,255,.3);border-color:#6c8eff;color:#6c8eff;font-weight:700}
     .no-video{padding:60px 20px;text-align:center;color:rgba(255,255,255,.3)}
     .no-video h2{color:#6c8eff;margin-bottom:10px}
+    .no-video p{margin-top:8px;font-size:13px}
   </style>
 </head>
 <body>
@@ -332,9 +359,13 @@ function youtubePlayerPage(host, videoId, info) {
     <div class="player-box">
       ${defaultUrl
         ? `<video id="vid" controls autoplay preload="auto" crossorigin="anonymous">
-             <source src="${esc(defaultUrl)}" type="video/mp4">
+             <source src="${esc(defaultUrl)}" type="${esc(defaultType)}">
            </video>`
-        : `<div class="no-video"><h2>Playback unavailable</h2><p>No streamable formats found. The video may be age-restricted, private, or region-locked.</p></div>`
+        : `<div class="no-video">
+             <h2>Playback unavailable</h2>
+             <p>No streamable formats found.</p>
+             <p style="margin-top:8px;color:rgba(255,255,255,.2)">The video may be age-restricted, private, or region-locked.</p>
+           </div>`
       }
     </div>
     <div class="vid-title">${title}</div>
@@ -342,7 +373,7 @@ function youtubePlayerPage(host, videoId, info) {
     ${qualityOptions.length > 1 ? `
     <div class="quality-bar">
       <span class="qlabel">Quality:</span>
-      ${qualityOptions.map((q,i) => `<button class="q-btn${i===0?' active':''}" data-url="${esc(q.url)}">${esc(q.label)}</button>`).join('')}
+      ${qualityOptions.map((q,i) => `<button class="q-btn${i===0?' active':''}" data-url="${esc(q.url)}" data-type="${esc(q.type)}">${esc(q.label)}</button>`).join('')}
     </div>` : ''}
   </div>
   <script>
@@ -353,7 +384,11 @@ function youtubePlayerPage(host, videoId, info) {
         var t=vid?vid.currentTime:0, paused=vid?vid.paused:true;
         document.querySelectorAll('.q-btn').forEach(function(b){b.classList.remove('active');});
         btn.classList.add('active');
-        if(vid){ vid.src=btn.getAttribute('data-url'); vid.load(); vid.currentTime=t; if(!paused) vid.play().catch(function(){}); }
+        if(vid){
+          vid.innerHTML='<source src="'+btn.getAttribute('data-url')+'" type="'+btn.getAttribute('data-type')+'">';
+          vid.load(); vid.currentTime=t;
+          if(!paused) vid.play().catch(function(){});
+        }
       });
     });
   })();
@@ -367,52 +402,49 @@ app.get('/yt', async (req, res) => {
   const urlParam = req.query.url || (req.query.v ? `https://www.youtube.com/watch?v=${req.query.v}` : null);
   const host = req.get('host');
   if (!urlParam) return res.status(400).send('Missing ?url= or ?v=');
-  if (!ytdl) {
-    stripAndSetCors(res);
-    return res.status(500).set('Content-Type','text/html').send(
-      `<html><body style="background:#0a0a12;color:#fff;font-family:system-ui;padding:40px;text-align:center">
-      <h2 style="color:#f44;margin-bottom:12px">ytdl-core not installed</h2>
-      <p style="color:rgba(255,255,255,.4)">Run: <code>npm install @distube/ytdl-core</code></p></body></html>`
-    );
-  }
   const videoId = extractYouTubeId(urlParam);
   if (!videoId) return res.status(400).send('Could not extract YouTube video ID');
   stripAndSetCors(res);
   res.set('Content-Type', 'text/html; charset=utf-8');
   try {
-    const info = await ytdl.getInfo(videoId, { requestOptions: { headers: { 'User-Agent': UA } } });
-    res.send(youtubePlayerPage(host, videoId, info));
+    const { data: invData, instance } = await getYouTubeInfo(videoId);
+    console.log(`[YT] Got info for ${videoId} from ${instance}`);
+    res.send(youtubePlayerPage(host, videoId, invData));
   } catch(err) {
     console.error('[YT]', err.message);
     res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>YouTube Error</title></head>
     <body style="background:#0a0a12;color:#fff;font-family:system-ui;padding:40px;text-align:center">
     <h2 style="color:#f44;margin-bottom:12px">YouTube playback error</h2>
-    <p style="color:rgba(255,255,255,.4)">${esc(err.message)}</p>
-    <p style="margin-top:20px;font-size:13px;color:rgba(255,255,255,.2)">
-      YouTube regularly changes their encryption. If this keeps failing, run:<br>
-      <code style="color:#6c8eff">npm install @distube/ytdl-core@latest</code>
-    </p>
-    <p style="margin-top:16px"><a href="https://${esc(host)}/" style="color:#6c8eff">← Back to home</a></p>
+    <p style="color:rgba(255,255,255,.5);margin-bottom:16px">${esc(err.message)}</p>
+    <p style="font-size:12px;color:rgba(255,255,255,.2)">All Invidious instances may be temporarily down. Try again in a moment.</p>
+    <p style="margin-top:20px"><a href="https://${esc(host)}/" style="color:#6c8eff">← Back to home</a></p>
     </body></html>`);
   }
 });
 
-// Proxy the actual video bytes with range support for seeking
+// Proxy the actual video bytes through our server with range-request support
+// This is needed because Invidious stream URLs have CORS restrictions
 app.get('/yt-stream', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).send('Missing ?url=');
   const rangeHdr = req.headers['range'];
   try {
-    const headers = { 'User-Agent': UA, 'Accept': '*/*', 'Accept-Encoding': 'identity', 'Referer': 'https://www.youtube.com/', 'Origin': 'https://www.youtube.com' };
+    const headers = {
+      'User-Agent': UA, 'Accept': '*/*', 'Accept-Encoding': 'identity',
+      'Referer': 'https://www.youtube.com/', 'Origin': 'https://www.youtube.com',
+    };
     if (rangeHdr) headers['Range'] = rangeHdr;
-    const upstream = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000, maxRedirects: 5, validateStatus: () => true, httpsAgent, headers });
+    const upstream = await axios.get(url, {
+      responseType: 'arraybuffer', timeout: 30000, maxRedirects: 5,
+      validateStatus: () => true, httpsAgent, headers,
+    });
     const ct = upstream.headers['content-type'] || 'video/mp4';
     BLOCKED_HEADERS.forEach(h => res.removeHeader(h));
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Content-Type', ct);
     res.set('Accept-Ranges', upstream.headers['accept-ranges'] || 'bytes');
-    if (upstream.headers['content-length'])  res.set('Content-Length',  upstream.headers['content-length']);
-    if (upstream.headers['content-range'])   res.set('Content-Range',   upstream.headers['content-range']);
+    if (upstream.headers['content-length']) res.set('Content-Length', upstream.headers['content-length']);
+    if (upstream.headers['content-range'])  res.set('Content-Range',  upstream.headers['content-range']);
     res.status(upstream.status).send(upstream.data);
   } catch(e) {
     console.error('[YT-STREAM]', e.message);
@@ -421,42 +453,62 @@ app.get('/yt-stream', async (req, res) => {
 });
 
 // ─── Twitch helpers ───────────────────────────────────────────────────────────
-// Uses Twitch's GQL API with their own public web client_id
-const TWITCH_GQL = 'https://gql.twitch.tv/gql';
-const TWITCH_CID = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
-const TWITCH_HDR = { 'Client-Id': TWITCH_CID, 'Content-Type': 'application/json', 'User-Agent': UA, 'Referer': 'https://www.twitch.tv/', 'Origin': 'https://www.twitch.tv' };
-const TWITCH_QUERY_HASH = '0828119ded1c13477966434e15800ff57ddacf13ba1911c129dc2200705b0712';
+// Uses Twitch's GQL API with their own public web client_id.
+// usher.twitch.tv is the correct domain (usher.twitchapps.com has DNS issues on Vercel).
+const TWITCH_GQL  = 'https://gql.twitch.tv/gql';
+const TWITCH_CID  = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
+const TWITCH_HDR  = { 'Client-Id': TWITCH_CID, 'Content-Type': 'application/json', 'User-Agent': UA, 'Referer': 'https://www.twitch.tv/', 'Origin': 'https://www.twitch.tv' };
+const TWITCH_HASH = '0828119ded1c13477966434e15800ff57ddacf13ba1911c129dc2200705b0712';
+
+// Two usher domains to try — first is the reliable one for Vercel
+const USHER_HOSTS = ['usher.twitch.tv', 'usher.twitchapps.com'];
+
+async function fetchUsher(path, params) {
+  let lastErr;
+  for (const host of USHER_HOSTS) {
+    const url = `https://${host}${path}?${params}`;
+    try {
+      const resp = await axios.get(url, {
+        timeout: 10000, validateStatus: () => true, httpsAgent,
+        headers: { 'User-Agent': UA, 'Referer': 'https://www.twitch.tv/' },
+      });
+      if (resp.status === 200) return url; // return the URL that worked
+      lastErr = new Error(`usher ${host} returned HTTP ${resp.status}`);
+    } catch(e) {
+      lastErr = e;
+      console.warn(`[TWITCH] usher ${host} failed: ${e.message}`);
+    }
+  }
+  throw lastErr || new Error('All usher hosts failed');
+}
 
 async function getTwitchStreamUrl(channel) {
   const resp = await axios.post(TWITCH_GQL,
-    [{ operationName: 'PlaybackAccessToken', variables: { isLive: true, login: channel, isVod: false, vodID: '', playerType: 'site' },
-       extensions: { persistedQuery: { version: 1, sha256Hash: TWITCH_QUERY_HASH } } }],
+    [{ operationName: 'PlaybackAccessToken',
+       variables: { isLive: true, login: channel, isVod: false, vodID: '', playerType: 'site' },
+       extensions: { persistedQuery: { version: 1, sha256Hash: TWITCH_HASH } } }],
     { timeout: 10000, httpsAgent, validateStatus: () => true, headers: TWITCH_HDR }
   );
   const tokenData = resp.data?.[0]?.data?.streamPlaybackAccessToken;
   if (!tokenData) throw new Error('Channel is offline or not found: ' + channel);
   const { value, signature } = tokenData;
-  const m3u8Url = `https://usher.twitchapps.com/api/channel/hls/${channel}.m3u8`
-    + `?sig=${encodeURIComponent(signature)}&token=${encodeURIComponent(value)}`
+  const params = `sig=${encodeURIComponent(signature)}&token=${encodeURIComponent(value)}`
     + `&allow_source=true&allow_audio_only=true&fast_bread=true&p=${Math.floor(Math.random()*9999999)}`;
-  const m3u8Resp = await axios.get(m3u8Url, { timeout: 10000, validateStatus: () => true, httpsAgent, headers: { 'User-Agent': UA } });
-  if (m3u8Resp.status !== 200) throw new Error('Could not fetch stream playlist (HTTP ' + m3u8Resp.status + ')');
-  return m3u8Url;
+  return fetchUsher(`/api/channel/hls/${channel}.m3u8`, params);
 }
 
 async function getTwitchVodUrl(vodId) {
   const resp = await axios.post(TWITCH_GQL,
-    [{ operationName: 'PlaybackAccessToken', variables: { isLive: false, login: '', isVod: true, vodID: vodId, playerType: 'site' },
-       extensions: { persistedQuery: { version: 1, sha256Hash: TWITCH_QUERY_HASH } } }],
+    [{ operationName: 'PlaybackAccessToken',
+       variables: { isLive: false, login: '', isVod: true, vodID: vodId, playerType: 'site' },
+       extensions: { persistedQuery: { version: 1, sha256Hash: TWITCH_HASH } } }],
     { timeout: 10000, httpsAgent, validateStatus: () => true, headers: TWITCH_HDR }
   );
   const tokenData = resp.data?.[0]?.data?.videoPlaybackAccessToken;
   if (!tokenData) throw new Error('VOD not found: ' + vodId);
   const { value, signature } = tokenData;
-  const m3u8Url = `https://usher.twitchapps.com/vod/${vodId}.m3u8?sig=${encodeURIComponent(signature)}&token=${encodeURIComponent(value)}&allow_source=true`;
-  const m3u8Resp = await axios.get(m3u8Url, { timeout: 10000, validateStatus: () => true, httpsAgent, headers: { 'User-Agent': UA } });
-  if (m3u8Resp.status !== 200) throw new Error('Could not fetch VOD playlist');
-  return m3u8Url;
+  const params = `sig=${encodeURIComponent(signature)}&token=${encodeURIComponent(value)}&allow_source=true`;
+  return fetchUsher(`/vod/${vodId}.m3u8`, params);
 }
 
 function twitchPlayerPage(host, label, m3u8Url, isVod) {
