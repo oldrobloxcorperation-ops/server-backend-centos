@@ -1051,7 +1051,6 @@ if (require.main === module) {
     console.log(`  ✓  YouTube  ->  http://localhost:${PORT}/yt?url=https://youtube.com/watch?v=dQw4w9WgXcQ`);
     console.log(`  ✓  Twitch   ->  http://localhost:${PORT}/twitch?channel=shroud`);
     console.log(`  ✓  Health   ->  http://localhost:${PORT}/health`);
-    console.log(ytdl ? '  ✓  @distube/ytdl-core loaded ✓' : '  ✗  ytdl-core NOT found — run: npm install @distube/ytdl-core');
     console.log();
   });
 }
