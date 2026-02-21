@@ -136,7 +136,113 @@ function injectedJs(pageUrl, host) {
 <\/script>`;
 }
 
-// Main proxy endpoint
+// Search endpoint — fetches Bing results server-side, rewrites links through proxy
+app.get('/search', async (req, res) => {
+  const q = req.query.q;
+  if (!q) return res.status(400).send('Missing ?q=');
+  const host = req.get('host');
+
+  try {
+    const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}&setlang=en`;
+    const upstream = await axios.get(searchUrl, {
+      timeout: 15000, httpsAgent, validateStatus: () => true,
+      headers: {
+        'User-Agent': UA,
+        'Accept': 'text/html,application/xhtml+xml,*/*;q=0.9',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+      }
+    });
+
+    const $ = cheerio.load(upstream.data.toString('utf-8'));
+
+    // Extract Bing search results
+    const results = [];
+    $('#b_results .b_algo').each((_, el) => {
+      const titleEl = $(el).find('h2 a');
+      const title = titleEl.text().trim();
+      const href = titleEl.attr('href');
+      const snippet = $(el).find('.b_caption p').text().trim();
+      const displayUrl = $(el).find('cite').text().trim();
+      if (title && href && /^https?:/.test(href)) {
+        results.push({ title, href, snippet, displayUrl });
+      }
+    });
+
+    // Build clean results page
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${q} — CentOS Search</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d0d1c;color:#f0f0f5;min-height:100vh;padding-bottom:40px}
+    .topbar{background:rgba(10,10,25,0.97);border-bottom:1px solid rgba(255,255,255,0.08);padding:12px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:99}
+    .logo{color:#6c8eff;font-size:18px;font-weight:700;white-space:nowrap;text-decoration:none}
+    .search-form{display:flex;flex:1;gap:8px;max-width:600px}
+    .search-inp{flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:22px;padding:8px 18px;color:#fff;font-size:14px;outline:none}
+    .search-inp:focus{border-color:rgba(108,142,255,0.6);background:rgba(108,142,255,0.08)}
+    .search-btn{background:#6c8eff;border:none;border-radius:22px;padding:8px 18px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+    .search-btn:hover{opacity:0.85}
+    .results{max-width:660px;margin:28px auto;padding:0 24px}
+    .result-count{font-size:13px;color:rgba(255,255,255,0.35);margin-bottom:20px}
+    .result{margin-bottom:28px}
+    .result-url{font-size:12px;color:#4ce8a0;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .result-title{font-size:18px;font-weight:500;margin-bottom:6px}
+    .result-title a{color:#6c8eff;text-decoration:none}
+    .result-title a:hover{text-decoration:underline}
+    .result-snippet{font-size:14px;color:rgba(240,240,245,0.65);line-height:1.6}
+    .no-results{text-align:center;padding:60px 20px;color:rgba(255,255,255,0.35);font-size:15px}
+    .powered{text-align:center;font-size:11px;color:rgba(255,255,255,0.15);margin-top:40px}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="logo">⬡ CentOS Search</span>
+    <form class="search-form" onsubmit="doSearch(event)">
+      <input class="search-inp" id="q" value="${q.replace(/"/g,'&quot;')}" placeholder="Search the web…"/>
+      <button class="search-btn" type="submit">Search</button>
+    </form>
+  </div>
+  <div class="results">
+    <div class="result-count">${results.length} results for "<strong>${q}</strong>"</div>
+    ${results.length ? results.map(r => `
+      <div class="result">
+        <div class="result-url">${r.displayUrl || r.href}</div>
+        <div class="result-title"><a href="https://${host}/proxy?url=${encodeURIComponent(r.href)}" onclick="navigate(event,'${encodeURIComponent(r.href)}')">${r.title}</a></div>
+        <div class="result-snippet">${r.snippet}</div>
+      </div>`).join('') : `<div class="no-results">No results found. Try a different search.</div>`}
+    <div class="powered">Powered by Bing · Routed through CentOS Web Proxy</div>
+  </div>
+  <script>
+    function doSearch(e){
+      e.preventDefault();
+      var q=document.getElementById('q').value.trim();
+      if(!q) return;
+      try{ window.parent.postMessage({type:'centos-nav',url:'https://${host}/search?q='+encodeURIComponent(q)},'*'); }catch{}
+    }
+    function navigate(e,encodedUrl){
+      e.preventDefault();
+      try{ window.parent.postMessage({type:'centos-nav',url:'https://${host}/proxy?url='+encodedUrl},'*'); }catch{}
+    }
+  </script>
+</body>
+</html>`;
+
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.set('Access-Control-Allow-Origin', '*');
+    res.removeHeader('X-Frame-Options');
+    res.set('Content-Security-Policy', 'frame-ancestors *');
+    res.send(html);
+  } catch (err) {
+    console.error('[SEARCH]', err.message);
+    res.status(500).send(`Search error: ${err.message}`);
+  }
+});
+
+
 app.get('/proxy', async (req, res) => {
   const raw = req.query.url;
   if (!raw) return res.status(400).send('Missing ?url=');
