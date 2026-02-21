@@ -6,52 +6,19 @@
       "use": "@vercel/node"
     }
   ],
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/server.js" }
+  ],
   "headers": [
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Content-Security-Policy",           "value": "frame-ancestors *" },
-        { "key": "Access-Control-Allow-Origin",       "value": "*" },
-        { "key": "Access-Control-Allow-Methods",      "value": "GET, POST, HEAD, OPTIONS" },
-        { "key": "Access-Control-Allow-Headers",      "value": "*" },
-        { "key": "Access-Control-Expose-Headers",     "value": "Content-Length, Content-Range, Accept-Ranges" }
+        { "key": "Content-Security-Policy",       "value": "frame-ancestors *" },
+        { "key": "Access-Control-Allow-Origin",   "value": "*" },
+        { "key": "Access-Control-Allow-Methods",  "value": "GET, POST, HEAD, OPTIONS" },
+        { "key": "Access-Control-Allow-Headers",  "value": "*" },
+        { "key": "Access-Control-Expose-Headers", "value": "Content-Length, Content-Range, Accept-Ranges" }
       ]
-    }
-  ],
-  "routes": [
-    {
-      "src": "/proxy(.*)",
-      "methods": ["GET", "POST", "HEAD", "OPTIONS"],
-      "headers": {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
-        "Access-Control-Allow-Headers": "*",
-        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges"
-      },
-      "dest": "/server.js"
-    },
-    {
-      "src": "/yt(.*)",
-      "methods": ["GET", "OPTIONS"],
-      "dest": "/server.js"
-    },
-    {
-      "src": "/yt-stream(.*)",
-      "methods": ["GET", "HEAD", "OPTIONS"],
-      "headers": {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges"
-      },
-      "dest": "/server.js"
-    },
-    {
-      "src": "/twitch(.*)",
-      "methods": ["GET", "OPTIONS"],
-      "dest": "/server.js"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/server.js"
     }
   ]
 }
