@@ -144,6 +144,7 @@ const SEARXNG_INSTANCES = [
   'https://opnxng.com',
   'https://searx.ox2.fr',
   'https://search.bus-hit.me',
+  'https://searx.tiekoetter.com',
 ].filter(Boolean);
 
 async function fetchSearxng(q, instanceUrl) {
