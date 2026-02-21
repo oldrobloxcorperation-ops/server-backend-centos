@@ -141,22 +141,22 @@ function injectedJs(pageUrl, host) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchGoogle(q) {
-  // Google Custom Search API — 100 queries/day free, no credit card needed.
-  // Setup (2 min):
-  //   1. Go to https://programmablesearchengine.google.com → New Search Engine
-  //      → set "Search the entire web" → copy the CX id
-  //   2. Go to https://developers.google.com/custom-search/v1/introduction
-  //      → Get a Key → copy the API key
-  //   3. Set GOOGLE_CSE_KEY and GOOGLE_CSE_CX in your environment variables.
   const key = process.env.GOOGLE_CSE_KEY;
   const cx  = process.env.GOOGLE_CSE_CX;
   if (!key || !cx) throw new Error('GOOGLE_CSE_KEY or GOOGLE_CSE_CX not set');
 
   const resp = await axios.get('https://www.googleapis.com/customsearch/v1', {
-    timeout: 10000, httpsAgent, validateStatus: s => s === 200,
+    timeout: 10000, httpsAgent,
+    validateStatus: () => true,   // don't throw on 4xx so we can log the body
     params: { key, cx, q, num: 10 },
     headers: { 'Accept': 'application/json' },
   });
+
+  if (resp.status !== 200) {
+    // Log the full Google error message so we can diagnose it
+    const errMsg = resp.data?.error?.message || JSON.stringify(resp.data).substring(0, 300);
+    throw new Error('Google CSE HTTP ' + resp.status + ': ' + errMsg);
+  }
 
   const items = resp.data?.items || [];
   return items.map(r => ({
@@ -168,23 +168,24 @@ async function fetchGoogle(q) {
 }
 
 
-async function fetchMarginalia(q) {
-  // Marginalia is a free search API — no key, no rate-limit headers needed.
-  // Returns: { results: [{url, title, description}] }
+async function fetchWiby(q) {
+  // Wiby.me -- free JSON search API, no key, no signup, works from any server IP.
   const resp = await axios.get(
-    `https://api.search.marginalia.nu/search/${encodeURIComponent(q)}`,
+    'https://wiby.me/json/?q=' + encodeURIComponent(q),
     {
       timeout: 10000, httpsAgent, validateStatus: s => s === 200,
       headers: { 'Accept': 'application/json', 'User-Agent': UA },
     }
   );
-  const items = resp.data?.results || [];
-  return items.map(r => ({
-    title:      r.title || r.url,
-    href:       r.url,
-    snippet:    r.description || '',
-    displayUrl: r.url,
-  }));
+  const items = Array.isArray(resp.data) ? resp.data : (resp.data.results || []);
+  return items.map(function(r) {
+    return {
+      title:      r.Title || r.title || r.URL || r.url || '',
+      href:       r.URL   || r.url   || '',
+      snippet:    r.Snippet || r.snippet || r.Description || r.description || '',
+      displayUrl: r.URL   || r.url   || '',
+    };
+  }).filter(function(r) { return r.href; });
 }
 
 // ─── Search endpoint ──────────────────────────────────────────────────────────
@@ -211,11 +212,11 @@ app.get('/search', async (req, res) => {
 
     if (!results.length) {
       try {
-        results = await fetchMarginalia(q);
-        source = 'Marginalia';
-        console.log('[SEARCH] ' + results.length + ' results from Marginalia');
+        results = await fetchWiby(q);
+        source = 'Wiby';
+        console.log('[SEARCH] ' + results.length + ' results from Wiby');
       } catch(e) {
-        console.warn('[SEARCH] Marginalia failed:', e.message);
+        console.warn('[SEARCH] Wiby failed:', e.message);
       }
     }
 
