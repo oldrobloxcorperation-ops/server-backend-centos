@@ -1,34 +1,20 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "server.js",
-      "use": "@vercel/node"
-    }
-  ],
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "Content-Security-Policy", "value": "frame-ancestors *" },
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "*" }
-      ]
-    }
-  ],
-  "routes": [
-    {
-      "src": "/proxy(.*)",
-      "methods": ["GET", "POST", "OPTIONS"],
-      "headers": {
-        "Access-Control-Allow-Origin": "*"
-      },
-      "dest": "/server.js"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/server.js"
-    }
-  ]
+  "name": "centos-web-proxy",
+  "version": "1.0.0",
+  "description": "CentOS Web Proxy with YouTube and Twitch support",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "axios": "^1.7.2",
+    "cors": "^2.8.5",
+    "cheerio": "^1.0.0",
+    "@distube/ytdl-core": "^4.14.4"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
 }
